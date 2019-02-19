@@ -55,16 +55,16 @@ using ::clang::ast_matchers::stmt;
 using ::clang::ast_matchers::to;
 using ::clang::ast_matchers::unless;
 
+using stencil_generators::addInclude;
 using stencil_generators::id;
 using stencil_generators::member;
-using stencil_generators::parens;
 using stencil_generators::name;
-using stencil_generators::addInclude;
+using stencil_generators::parens;
 using stencil_generators::removeInclude;
 
 constexpr char KHeaderContents[] = R"cc(
   struct string {
-    string(const char *);
+    string(const char*);
     char* c_str();
     int size();
   };
@@ -86,7 +86,7 @@ constexpr char KHeaderContents[] = R"cc(
 }  // namespace
 
 static clang::ast_matchers::internal::Matcher<clang::QualType> isOrPointsTo(
-    const DeclarationMatcher& TypeMatcher) {
+    const DeclarationMatcher &TypeMatcher) {
   return anyOf(hasDeclaration(TypeMatcher), pointsTo(TypeMatcher));
 }
 
@@ -104,8 +104,8 @@ static std::string format(llvm::StringRef Code) {
 }
 
 void compareSnippets(llvm::StringRef Expected,
-                     const llvm::Optional<std::string>& MaybeActual) {
-  ASSERT_TRUE(MaybeActual) << "Rewrite failed. Expecting: " << Expected;
+                     const llvm::Optional<std::string> &MaybeActual) {
+  ASSERT_TRUE(MaybeActual) << "Rewrite failed. Expecting: " << Expected.str();
   auto Actual = *MaybeActual;
   std::string HL = "#include \"header.h\"\n";
   auto I = Actual.find(HL);
@@ -115,7 +115,7 @@ void compareSnippets(llvm::StringRef Expected,
   EXPECT_EQ(format(Expected), format(Actual));
 }
 
-// FIXME: consider separating this class into its own file(s).
+// TODO(yitzhakm): consider separating this class into its own file(s).
 class ClangRefactoringTestBase : public testing::Test {
  protected:
   void appendToHeader(llvm::StringRef S) { FileContents[0].second += S; }
@@ -152,12 +152,10 @@ class ClangRefactoringTestBase : public testing::Test {
 
 class TransformerTest : public ClangRefactoringTestBase {
  protected:
-  TransformerTest() {
-    appendToHeader(KHeaderContents);
-  }
+  TransformerTest() { appendToHeader(KHeaderContents); }
 
   Transformer::ChangeConsumer changeRecorder() {
-    return [this](const AtomicChange& C) { Changes.push_back(C); };
+    return [this](const AtomicChange &C) { Changes.push_back(C); };
   }
 };
 
@@ -377,7 +375,7 @@ RewriteRule ruleLogIf() {
   ExprId Level;
   ExprId Msg;
   auto LogCall = callExpr(callee(functionDecl(hasName("log"))),
-                           hasArgument(0, Level.bind()));
+                          hasArgument(0, Level.bind()));
   return makeRule(
       ifStmt(hasCondition(Condition.bind()),
              hasThen(expr(ignoringImplicit(cxxOperatorCallExpr(
@@ -462,17 +460,17 @@ RewriteRule invertIf() {
   return RewriteRule()
       .matching(
           ifStmt(hasCondition(C.bind()), hasThen(T.bind()), hasElse(E.bind())))
-      .replaceWith("if(!(", C, ")) ", E, "; else ", T);
+      .replaceWith("if(!(", C, ")) ", E, " else ", T);
 }
 
 // Use the lvalue-ref overloads of the RewriteRule builder methods.
 RewriteRule invertIfLvalue() {
   ExprId C;
-  StmtId T,E;
+  StmtId T, E;
   RewriteRule Rule;
   Rule.matching(
           ifStmt(hasCondition(C.bind()), hasThen(T.bind()), hasElse(E.bind())))
-      .replaceWith("if(!(", C, ")) ", E, "; else ", T);
+      .replaceWith("if(!(", C, ")) ", E, " else ", T);
   return Rule;
 }
 
@@ -645,15 +643,18 @@ TEST_F(TransformerTest, NodePartNameDeclRefFailure) {
   std::string Input = R"cc(
     struct Y {};
     int operator*(const Y&);
-    int neutral(int x) { Y y; return *y + x; }
+    int neutral(int x) {
+      Y y;
+      return *y + x;
+    }
   )cc";
 
   ExprId Ref;
   Transformer T(RewriteRule()
-                 .matching(declRefExpr(to(functionDecl()), Ref.bind()))
-                 .change(Ref, NodePart::kName)
-                 .replaceWith("good"),
-             changeRecorder());
+                    .matching(declRefExpr(to(functionDecl()), Ref.bind()))
+                    .change(Ref, NodePart::kName)
+                    .replaceWith("good"),
+                changeRecorder());
   T.registerMatchers(&MatchFinder);
   compareSnippets(Input, rewrite(Input));
 }
@@ -668,12 +669,22 @@ RewriteRule ruleChangeFieldName() {
 
 TEST_F(TransformerTest, NodePartMember) {
   std::string Input = R"cc(
-    struct S { int bad; };
-    int g() { S s; return s.bad; }
+    struct S {
+      int bad;
+    };
+    int g() {
+      S s;
+      return s.bad;
+    }
   )cc";
   std::string Expected = R"cc(
-    struct S { int bad; };
-    int g() { S s; return s.good; }
+    struct S {
+      int bad;
+    };
+    int g() {
+      S s;
+      return s.good;
+    }
   )cc";
 
   Transformer T(ruleChangeFieldName(), changeRecorder());
@@ -712,9 +723,9 @@ RewriteRule ruleDuplicateArgs() {
       .matching(callExpr(argumentCountIs(2), hasArgument(0, Arg0.bind()),
                          hasArgument(1, Arg1.bind())))
       .where([Arg0, Arg1](
-                 const clang::ast_matchers::MatchFinder::MatchResult& result) {
-        auto* Ref0 = Arg0.getNodeAs<clang::DeclRefExpr>(result);
-        auto* Ref1 = Arg1.getNodeAs<clang::DeclRefExpr>(result);
+                 const clang::ast_matchers::MatchFinder::MatchResult &result) {
+        auto *Ref0 = Arg0.getNodeAs<clang::DeclRefExpr>(result);
+        auto *Ref1 = Arg1.getNodeAs<clang::DeclRefExpr>(result);
         return Ref0 != nullptr && Ref1 != nullptr &&
                Ref0->getDecl() == Ref1->getDecl();
       })
@@ -791,7 +802,7 @@ TEST_F(TransformerTest, NoTransformationInNestedMacro) {
 //
 
 // Formats an Optional<string> for error messages.
-std::string errString(const llvm::Optional<std::string>& O) {
+std::string errString(const llvm::Optional<std::string> &O) {
   return O ? "Some " + *O : "None";
 }
 
@@ -822,17 +833,15 @@ class MaybeTransformTest : public ::testing::Test {
   }
 
   // Convenience method.
-  clang::ASTContext* context() { return &AstUnit->getASTContext(); }
+  clang::ASTContext *context() { return &AstUnit->getASTContext(); }
 
   std::unique_ptr<clang::ASTUnit> AstUnit;
   clang::ast_type_traits::DynTypedNode Node;
 };
 
-// TODO: belongs in utility location or whatnot
 // A very simple matcher for llvm::Optional values.
 MATCHER_P(IsSomething, ValueMatcher, "") {
-  if (!arg)
-    return false;
+  if (!arg) return false;
   return ::testing::ExplainMatchResult(ValueMatcher, *arg, result_listener);
 }
 
@@ -842,7 +851,7 @@ TEST_F(MaybeTransformTest, SuccessRuleApplies) {
   if (auto Err = ResultOrErr.takeError()) {
     GTEST_FAIL() << "Rewrite failed: " << llvm::toString(std::move(Err));
   }
-  auto& Result = *ResultOrErr;
+  auto &Result = *ResultOrErr;
   EXPECT_THAT(Result, IsSomething(testing::Eq("s.size()")));
 }
 
@@ -854,7 +863,7 @@ TEST_F(MaybeTransformTest, SuccessRuleDoesNotApply) {
   if (auto Err = ResultOrErr.takeError()) {
     GTEST_FAIL() << "Rewrite failed: " << llvm::toString(std::move(Err));
   }
-  auto& Result = *ResultOrErr;
+  auto &Result = *ResultOrErr;
   EXPECT_EQ(Result, llvm::None) << "Actual result is: " << errString(Result);
 }
 
