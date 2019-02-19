@@ -22,271 +22,14 @@
 
 namespace clang {
 namespace tooling {
-//
-// BEGIN Utilities -- the folowing functions all belong in a separate utilities
-// library.  We include them here for the purposes of this demo so that it will
-// compile
-//
 
-// Returns true if expr needs to be put in parens when it is the target
-// of a dot or arrow, i.e. when it is an operator syntactically.
-static bool needParensBeforeDotOrArrow(const clang::Expr &Expr) {
-  // We always want parens around unary, binary, and ternary operators.
-  if (llvm::dyn_cast<clang::UnaryOperator>(&Expr) ||
-      llvm::dyn_cast<clang::BinaryOperator>(&Expr) ||
-      llvm::dyn_cast<clang::ConditionalOperator>(&Expr)) {
-    return true;
-  }
-
-  // We need parens around calls to all overloaded operators except for function
-  // calls, subscripts, and expressions that are already part of an implicit
-  // call to operator->.
-  if (const auto *Op = llvm::dyn_cast<clang::CXXOperatorCallExpr>(&Expr)) {
-    return Op->getOperator() != clang::OO_Call &&
-           Op->getOperator() != clang::OO_Subscript &&
-           Op->getOperator() != clang::OO_Arrow;
-  }
-
-  return false;
+// A down_cast function to safely down cast a StencilPartInterface to a subclass
+// D. Returns nullptr if P is not an instance of D.
+template <typename D>
+const D *down_cast(const StencilPartInterface *P) {
+  if (P == nullptr || D::typeId() != P->typeId()) return nullptr;
+  return static_cast<const D*>(P);
 }
-
-// BEGIN from clang-tidy/readability/RedundantStringCStrCheck.cpp
-
-// Return true if expr needs to be put in parens when it is an argument of a
-// prefix unary operator, e.g. when it is a binary or ternary operator
-// syntactically.
-static bool needParensAfterUnaryOperator(const Expr &ExprNode) {
-  if (isa<clang::BinaryOperator>(&ExprNode) ||
-      isa<clang::ConditionalOperator>(&ExprNode)) {
-    return true;
-  }
-  if (const auto *Op = dyn_cast<CXXOperatorCallExpr>(&ExprNode)) {
-    return Op->getNumArgs() == 2 && Op->getOperator() != OO_PlusPlus &&
-           Op->getOperator() != OO_MinusMinus && Op->getOperator() != OO_Call &&
-           Op->getOperator() != OO_Subscript;
-  }
-  return false;
-}
-
-// Format a pointer to an expression: prefix with '*' but simplify
-// when it already begins with '&'.  Return empty string on failure.
-static std::string formatDereference(const ASTContext &Context,
-                                     const Expr &ExprNode) {
-  if (const auto *Op = dyn_cast<clang::UnaryOperator>(&ExprNode)) {
-    if (Op->getOpcode() == UO_AddrOf) {
-      // Strip leading '&'.
-      return tooling::fixit::getText(*Op->getSubExpr()->IgnoreParens(),
-                                     Context);
-    }
-  }
-  StringRef Text = tooling::fixit::getText(ExprNode, Context);
-
-  if (Text.empty())
-    return std::string();
-  // Add leading '*'.
-  if (needParensAfterUnaryOperator(ExprNode)) {
-    return (llvm::Twine("*(") + Text + ")").str();
-  }
-  return (llvm::Twine("*") + Text).str();
-}
-
-// END from clang-tidy/readability/RedundantStringCStrCheck.cpp
-
-// Format a pointer to an expression: prefix with '&' but simplify when it
-// already begins with '*'.  Returns empty string on failure.
-static std::string formatAddressOf(const ASTContext &Context,
-                            const clang::Expr &Expr) {
-  if (const auto *Op = llvm::dyn_cast<clang::UnaryOperator>(&Expr)) {
-    if (Op->getOpcode() == clang::UO_Deref) {
-      // Strip leading '*'.
-      return tooling::fixit::getText(*Op->getSubExpr()->IgnoreParens(),
-                                     Context);
-    }
-  }
-  // Add leading '&'.
-  const std::string Text = fixit::getText(Expr, Context);
-  if (Text.empty())
-    return std::string();
-  if (needParensAfterUnaryOperator(Expr)) {
-    return (llvm::Twine("&(") + Text + ")").str();
-  }
-  return (llvm::Twine("&") + Text).str();
-}
-
-static std::string formatDot(const ASTContext &Context,
-                             const clang::Expr &Expr) {
-  if (const auto *Op = llvm::dyn_cast<clang::UnaryOperator>(&Expr)) {
-    if (Op->getOpcode() == clang::UO_Deref) {
-      // Strip leading '*', add following '->'.
-      const clang::Expr *SubExpr = Op->getSubExpr()->IgnoreParenImpCasts();
-      const std::string DerefText = fixit::getText(*SubExpr, Context);
-      if (DerefText.empty())
-        return std::string();
-      if (needParensBeforeDotOrArrow(*SubExpr)) {
-        return (llvm::Twine("(") + DerefText + ")->").str();
-      }
-      return (llvm::Twine(DerefText) + "->").str();
-    }
-  }
-  // Add following '.'.
-  const std::string Text = fixit::getText(Expr, Context);
-  if (Text.empty())
-    return std::string();
-  if (needParensBeforeDotOrArrow(Expr)) {
-    return (llvm::Twine("(") + Text + ").").str();
-  }
-  return (llvm::Twine(Text) + ".").str();
-}
-
-static std::string formatArrow(const ASTContext &Context,
-                               const clang::Expr &Expr) {
-  if (const auto *Op = llvm::dyn_cast<clang::UnaryOperator>(&Expr)) {
-    if (Op->getOpcode() == clang::UO_AddrOf) {
-      // Strip leading '&', add following '.'.
-      const clang::Expr *SubExpr = Op->getSubExpr()->IgnoreParenImpCasts();
-      const std::string DerefText = fixit::getText(*SubExpr, Context);
-      if (DerefText.empty())
-        return std::string();
-      if (needParensBeforeDotOrArrow(*SubExpr)) {
-        return (llvm::Twine("(") + DerefText + ").").str();
-      }
-      return (llvm::Twine(DerefText) + ".").str();
-    }
-  }
-  // Add following '->'.
-  const std::string Text = fixit::getText(Expr, Context);
-  if (Text.empty())
-    return std::string();
-  if (needParensBeforeDotOrArrow(Expr)) {
-    return (llvm::Twine("(") + Text + ")->").str();
-  }
-  return (llvm::Twine(Text) + "->").str();
-}
-
-// BEGIN from: clang-tidy/utils/LexerUtils.cpp
-static SourceLocation findPreviousTokenStart(SourceLocation Start,
-                                             const SourceManager &SM,
-                                             const LangOptions &LangOpts) {
-  if (Start.isInvalid() || Start.isMacroID())
-    return SourceLocation();
-
-  SourceLocation BeforeStart = Start.getLocWithOffset(-1);
-  if (BeforeStart.isInvalid() || BeforeStart.isMacroID())
-    return SourceLocation();
-
-  return Lexer::GetBeginningOfToken(BeforeStart, SM, LangOpts);
-}
-
-static SourceLocation findPreviousTokenKind(SourceLocation Start,
-                                            const SourceManager &SM,
-                                            const LangOptions &LangOpts,
-                                            tok::TokenKind TK) {
-  while (true) {
-    SourceLocation L = findPreviousTokenStart(Start, SM, LangOpts);
-    if (L.isInvalid() || L.isMacroID())
-      return SourceLocation();
-
-    Token T;
-    if (Lexer::getRawToken(L, T, SM, LangOpts, /*IgnoreWhiteSpace=*/true))
-      return SourceLocation();
-
-    if (T.is(TK))
-      return T.getLocation();
-
-    Start = L;
-  }
-}
-// END From: clang-tidy/utils/LexerUtils
-
-// For refactoring purposes, some expressions should be wrapped in parentheses
-// to avoid changes in the order of operation, assuming no other information
-// about the surrounding context.
-static bool needsParens(const Expr *E) {
-  return isa<BinaryOperator>(E) || isa<UnaryOperator>(E) ||
-         isa<CXXOperatorCallExpr>(E) || isa<AbstractConditionalOperator>(E);
-}
-
-// Finds the open paren of the call expression and return its location.  Returns
-// an invalid location if not found.
-static SourceLocation
-getOpenParen(const CallExpr &E,
-             const ast_matchers::MatchFinder::MatchResult &Result) {
-  SourceLocation EndLoc =
-      E.getNumArgs() == 0 ? E.getRParenLoc() : E.getArg(0)->getBeginLoc();
-  return findPreviousTokenKind(EndLoc, *Result.SourceManager,
-                               Result.Context->getLangOpts(),
-                               tok::TokenKind::l_paren);
-}
-
-// For a given range, returns the lexed token immediately after the range if
-// and only if it's a semicolon.
-static Optional<Token> getTrailingSemi(SourceLocation EndLoc,
-                                       const ASTContext &Context) {
-  if (Optional<Token> Next = Lexer::findNextToken(
-          EndLoc, Context.getSourceManager(), Context.getLangOpts())) {
-    return Next->is(clang::tok::TokenKind::semi) ? Next : None;
-  }
-  return None;
-}
-
-static const clang::Stmt *getStatementParent(const clang::Stmt &node,
-                                             ASTContext &context) {
-  using namespace ast_matchers;
-
-  auto is_or_has_node =
-      anyOf(equalsNode(&node), hasDescendant(equalsNode(&node)));
-  auto not_in_condition = unless(hasCondition(is_or_has_node));
-  // Note that SwitchCase nodes have the subsequent statement as substatement.
-  // For example, in "case 1: a(); b();", a() will be the child of the
-  // SwitchCase "case 1:".
-  // TODO(djasper): Also handle other labels, probably not important in google3.
-  // missing: switchStmt() (although this is a weird corner case).
-  auto statement = stmt(hasParent(
-      stmt(anyOf(compoundStmt(), whileStmt(not_in_condition),
-                 doStmt(not_in_condition), switchCase(),
-                 ifStmt(not_in_condition),
-                 forStmt(not_in_condition, unless(hasIncrement(is_or_has_node)),
-                         unless(hasLoopInit(is_or_has_node)))))
-          .bind("parent")));
-  return selectFirst<const clang::Stmt>("parent",
-                                        match(statement, node, context));
-}
-
-// Is a real statement (not an expression inside another expression). That is,
-// not an expression with an expression parent.
-static bool isRealStatement(const Stmt &S, ASTContext &Context) {
-  return !isa<Expr>(S) || getStatementParent(S, Context) != nullptr;
-}
-
-// For all non-expression statements, extend the source to include any trailing
-// semi. Returns a SourceRange representing a token range.
-static SourceRange getTokenRange(const Stmt &S, ASTContext &Context) {
-  // Only exlude non-statement expressions.
-  if (isRealStatement(S, Context)) {
-    // TODO: exclude case where last token is a right brace?
-    if (auto Tok = getTrailingSemi(S.getEndLoc(), Context))
-      return SourceRange(S.getBeginLoc(), Tok->getLocation());
-  }
-  return S.getSourceRange();
-}
-
-static SourceRange getTokenRange(const ast_type_traits::DynTypedNode &Node,
-                                 ASTContext &Context) {
-  if (const auto *S = Node.get<Stmt>())
-    return getTokenRange(*S, Context);
-  return Node.getSourceRange();
-}
-
-template <typename T>
-StringRef getText(const T &Node, ASTContext &Context) {
-  return Lexer::getSourceText(
-      CharSourceRange::getTokenRange(getTokenRange(Node, Context)),
-      Context.getSourceManager(), Context.getLangOpts());
-}
-
-//
-// END Utilities
-//
 
 // For guaranteeing unique ids on NodeId creation.
 static size_t nextId() {
@@ -319,8 +62,8 @@ getStatementsText(const CompoundStmt &CS,
                               Result.Context->getLangOpts());
 }
 
-static Expected<ast_type_traits::DynTypedNode>
-getNode(const ast_matchers::BoundNodes &Nodes, llvm::StringRef Id) {
+static llvm::Expected<ast_type_traits::DynTypedNode> getNode(
+    const ast_matchers::BoundNodes &Nodes, StringRef Id) {
   auto &NodesMap = Nodes.getMap();
   auto It = NodesMap.find(Id);
   if (It == NodesMap.end()) {
@@ -336,12 +79,17 @@ using ::llvm::errc;
 using ::llvm::Error;
 using ::llvm::Expected;
 using ::llvm::StringError;
-using ::llvm::StringRef;
 
 // An arbitrary fragment of code within a stencil.
 class RawText : public StencilPartInterface {
-public:
-  explicit RawText(StringRef Text) : Text(Text) {}
+ public:
+  explicit RawText(StringRef Text)
+      : StencilPartInterface(RawText::typeId()), Text(Text) {}
+
+  static const void* typeId() {
+    static bool b;
+    return &b;
+  }
 
   Error eval(const MatchFinder::MatchResult &,
              std::string *Result) const override {
@@ -353,14 +101,27 @@ public:
     return llvm::make_unique<RawText>(*this);
   }
 
-private:
+  bool isEqual(const StencilPartInterface &Other) const override {
+    if (const auto *OtherPtr = down_cast<RawText>(&Other)) {
+      return Text == OtherPtr->Text;
+    }
+    return false;
+  }
+
+ private:
   std::string Text;
 };
 
 // A debugging operation to dump the AST for a particular (bound) AST node.
 class DebugPrintNodeOp : public StencilPartInterface {
-public:
-  explicit DebugPrintNodeOp(StringRef Id) : Id(Id) {}
+ public:
+  explicit DebugPrintNodeOp(StringRef Id)
+      : StencilPartInterface(DebugPrintNodeOp::typeId()), Id(Id) {}
+
+  static const void* typeId() {
+    static bool b;
+    return &b;
+  }
 
   Error eval(const MatchFinder::MatchResult &Match,
              std::string *Result) const override {
@@ -379,14 +140,27 @@ public:
     return llvm::make_unique<DebugPrintNodeOp>(*this);
   }
 
-private:
+  bool isEqual(const StencilPartInterface &Other) const override {
+    if (const auto *OtherPtr = down_cast<DebugPrintNodeOp>(&Other)) {
+      return Id == OtherPtr->Id;
+    }
+    return false;
+  }
+
+ private:
   std::string Id;
 };
 
 // A reference to a particular (bound) AST node.
 class NodeRef : public StencilPartInterface {
-public:
-  explicit NodeRef(StringRef Id) : Id(Id) {}
+ public:
+  explicit NodeRef(StringRef Id)
+      : StencilPartInterface(NodeRef::typeId()), Id(Id) {}
+
+  static const void* typeId() {
+    static bool b;
+    return &b;
+  }
 
   Error eval(const MatchFinder::MatchResult &Match,
              std::string *Result) const override {
@@ -394,7 +168,7 @@ public:
     if (auto Err = NodeOrErr.takeError()) {
       return Err;
     }
-    *Result += getText(NodeOrErr.get(), *Match.Context);
+    *Result += fixit::getText(NodeOrErr.get(), *Match.Context);
     return Error::success();
   }
 
@@ -402,7 +176,14 @@ public:
     return llvm::make_unique<NodeRef>(*this);
   }
 
-private:
+  bool isEqual(const StencilPartInterface &Other) const override {
+    if (const auto *OtherPtr = down_cast<NodeRef>(&Other)) {
+      return Id == OtherPtr->Id;
+    }
+    return false;
+  }
+
+ private:
   std::string Id;
 };
 
@@ -410,9 +191,16 @@ private:
 // describing a member m, yields "e->m", when e is a pointer, "e2->m" when e =
 // "*e2" and "e.m" otherwise.
 class MemberOp : public StencilPartInterface {
-public:
+ public:
   MemberOp(StringRef ObjectId, StencilPart Member)
-      : ObjectId(ObjectId), Member(std::move(Member)) {}
+      : StencilPartInterface(MemberOp::typeId()),
+        ObjectId(ObjectId),
+        Member(std::move(Member)) {}
+
+  static const void* typeId() {
+    static bool b;
+    return &b;
+  }
 
   Error eval(const MatchFinder::MatchResult &Match,
              std::string *Result) const override {
@@ -421,8 +209,6 @@ public:
       return llvm::make_error<StringError>(errc::invalid_argument,
                                            "Id not bound: " + ObjectId);
     }
-    // N.B. The RHS is a google string. TODO(yitzhakm): fix the RHS to be a
-    // std::string.
     if (!E->isImplicitCXXThis()) {
       *Result += E->getType()->isAnyPointerType()
                      ? formatArrow(*Match.Context, *E)
@@ -435,14 +221,21 @@ public:
     return llvm::make_unique<MemberOp>(*this);
   }
 
-private:
+  bool isEqual(const StencilPartInterface &Other) const override {
+    if (const auto *OtherPtr = down_cast<MemberOp>(&Other)) {
+      return ObjectId == OtherPtr->ObjectId && Member == OtherPtr->Member;
+    }
+    return false;
+  }
+
+ private:
   std::string ObjectId;
   StencilPart Member;
 };
 
 // Operations all take a single reference to a Expr parameter, e.
 class ExprOp : public StencilPartInterface {
-public:
+ public:
   enum class Operator {
     // Yields "e2" when e = "&e2" (with '&' the builtin operator), "*e" when e
     // is a pointer and "e" otherwise.
@@ -456,7 +249,13 @@ public:
     kParens,
   };
 
-  ExprOp(Operator Op, StringRef Id) : Op(Op), Id(Id) {}
+  ExprOp(Operator Op, StringRef Id)
+      : StencilPartInterface(ExprOp::typeId()), Op(Op), Id(Id) {}
+
+  static const void* typeId() {
+    static bool b;
+    return &b;
+  }
 
   Error eval(const MatchFinder::MatchResult &Match,
              std::string *Result) const override {
@@ -467,29 +266,29 @@ public:
     }
     const auto &Context = *Match.Context;
     switch (Op) {
-    case ExprOp::Operator::kValue:
-      if (Expression->getType()->isAnyPointerType()) {
-        *Result += formatDereference(Context, *Expression);
-      } else {
-        *Result += fixit::getText(*Expression, Context);
-      }
-      break;
-    case ExprOp::Operator::kAddress:
-      if (Expression->getType()->isAnyPointerType()) {
-        *Result += fixit::getText(*Expression, Context);
-      } else {
-        *Result += formatAddressOf(Context, *Expression);
-      }
-      break;
-    case ExprOp::Operator::kParens:
-      if (needsParens(Expression)) {
-        *Result += "(";
-        *Result += fixit::getText(*Expression, Context);
-        *Result += ")";
-      } else {
-        *Result += fixit::getText(*Expression, Context);
-      }
-      break;
+      case ExprOp::Operator::kValue:
+        if (Expression->getType()->isAnyPointerType()) {
+          *Result += formatDereference(Context, *Expression);
+        } else {
+          *Result += fixit::getText(*Expression, Context);
+        }
+        break;
+      case ExprOp::Operator::kAddress:
+        if (Expression->getType()->isAnyPointerType()) {
+          *Result += fixit::getText(*Expression, Context);
+        } else {
+          *Result += formatAddressOf(Context, *Expression);
+        }
+        break;
+      case ExprOp::Operator::kParens:
+        if (needsParens(*Expression)) {
+          *Result += "(";
+          *Result += fixit::getText(*Expression, Context);
+          *Result += ")";
+        } else {
+          *Result += fixit::getText(*Expression, Context);
+        }
+        break;
     }
     return Error::success();
   }
@@ -498,7 +297,14 @@ public:
     return llvm::make_unique<ExprOp>(*this);
   }
 
-private:
+  bool isEqual(const StencilPartInterface &Other) const override {
+    if (const auto *OtherPtr = down_cast<ExprOp>(&Other)) {
+      return Op == OtherPtr->Op && Id == OtherPtr->Id;
+    }
+    return false;
+  }
+
+ private:
   Operator Op;
   std::string Id;
 };
@@ -507,8 +313,14 @@ private:
 // the name. "d" must have an identifier name (that is, constructors are
 // not valid arguments to the Name operation).
 class NameOp : public StencilPartInterface {
-public:
-  explicit NameOp(StringRef Id) : Id(Id) {}
+ public:
+  explicit NameOp(StringRef Id)
+      : StencilPartInterface(NameOp::typeId()), Id(Id) {}
+
+  static const void* typeId() {
+    static bool b;
+    return &b;
+  }
 
   Error eval(const MatchFinder::MatchResult &Match,
              std::string *Result) const override {
@@ -540,15 +352,28 @@ public:
     return llvm::make_unique<NameOp>(*this);
   }
 
-private:
+  bool isEqual(const StencilPartInterface &Other) const override {
+    if (const auto *OtherPtr = down_cast<NameOp>(&Other)) {
+      return Id == OtherPtr->Id;
+    }
+    return false;
+  }
+
+ private:
   std::string Id;
 };
 
 // Given a reference to a call expression (CallExpr), yields the
 // arguments as a comma separated list.
 class ArgsOp : public StencilPartInterface {
-public:
-  explicit ArgsOp(StringRef Id) : Id(Id) {}
+ public:
+  explicit ArgsOp(StringRef Id)
+      : StencilPartInterface(ArgsOp::typeId()), Id(Id) {}
+
+  static const void* typeId() {
+    static bool b;
+    return &b;
+  }
 
   Error eval(const MatchFinder::MatchResult &Match,
              std::string *Result) const override {
@@ -566,6 +391,9 @@ public:
   }
 
 private:
+  bool isEqual(const StencilPartInterface &Other) const override {
+    if (const auto *OtherPtr = down_cast<ArgsOp>(&Other)) {
+      return Id == OtherPtr->Id;
   std::string Id;
 };
 
@@ -603,7 +431,14 @@ private:
 class NodeFunctionOp : public StencilPartInterface {
 public:
   NodeFunctionOp(stencil_generators::NodeFunction F, StringRef Id)
-      : F(std::move(F)), Id(Id) {}
+      : StencilPartInterface(NodeFunctionOp::typeId()),
+        F(std::move(F)),
+        Id(Id) {}
+
+  static const void* typeId() {
+    static bool b;
+    return &b;
+  }
 
   Error eval(const MatchFinder::MatchResult &Match,
              std::string *Result) const override {
@@ -619,7 +454,11 @@ public:
     return llvm::make_unique<NodeFunctionOp>(*this);
   }
 
-private:
+  bool isEqual(const StencilPartInterface &Other) const override {
+    return false;
+  }
+
+ private:
   stencil_generators::NodeFunction F;
   std::string Id;
 };
@@ -627,9 +466,16 @@ private:
 // Given a function and a stencil part, yields the string that results from
 // applying the function to the part's evaluation.
 class StringFunctionOp : public StencilPartInterface {
-public:
+ public:
   StringFunctionOp(stencil_generators::StringFunction F, StencilPart Part)
-      : F(std::move(F)), Part(std::move(Part)) {}
+      : StencilPartInterface(StringFunctionOp::typeId()),
+        F(std::move(F)),
+        Part(std::move(Part)) {}
+
+  static const void* typeId() {
+    static bool b;
+    return &b;
+  }
 
   Error eval(const MatchFinder::MatchResult &Match,
              std::string *Result) const override {
@@ -645,11 +491,15 @@ public:
     return llvm::make_unique<StringFunctionOp>(*this);
   }
 
-private:
+  bool isEqual(const StencilPartInterface &Other) const override {
+    return false;
+  }
+
+ private:
   stencil_generators::StringFunction F;
   StencilPart Part;
 };
-} // namespace
+}  // namespace
 
 NodeId::NodeId() : NodeId(nextId()) {}
 
@@ -661,8 +511,18 @@ void Stencil::append(StringRef Text) {
   Parts.emplace_back(llvm::make_unique<RawText>(Text));
 }
 
-llvm::Expected<std::string>
-Stencil::eval(const MatchFinder::MatchResult &Match) const {
+void Stencil::concat(Stencil OtherStencil) {
+  for (auto &Part : OtherStencil.Parts) Parts.push_back(std::move(Part));
+  for (auto &AddedInclude : OtherStencil.AddedIncludes) {
+    AddedIncludes.push_back(std::move(AddedInclude));
+  }
+  for (auto &RemovedInclude : OtherStencil.RemovedIncludes) {
+    RemovedIncludes.push_back(std::move(RemovedInclude));
+  }
+}
+
+llvm::Expected<std::string> Stencil::eval(
+    const MatchFinder::MatchResult &Match) const {
   std::string Result;
   for (const auto &Part : Parts) {
     if (auto Err = Part.eval(Match, &Result)) {
@@ -738,11 +598,6 @@ StencilPart args(StringRef CallId) {
   return StencilPart(llvm::make_unique<ArgsOp>(CallId));
 }
 StencilPart args(const NodeId &CallId) { return args(CallId.id()); }
-
-StencilPart statements(llvm::StringRef StmtId) {
-  return StencilPart(llvm::make_unique<StatementsOp>(StmtId));
-}
-StencilPart statements(const NodeId &StmtId) { return statements(StmtId.id()); }
 
 StencilPart dPrint(StringRef Id) {
   return StencilPart(llvm::make_unique<DebugPrintNodeOp>(Id));

@@ -41,62 +41,16 @@ using ::llvm::StringRef;
 using MatchResult = MatchFinder::MatchResult;
 }  // namespace
 
-// For a given range, returns the lexed token immediately after the range if
-// and only if it's a semicolon.
-static Optional<Token> getTrailingSemi(SourceLocation EndLoc,
-                                       const ASTContext &Context) {
-  if (Optional<Token> Next = Lexer::findNextToken(
-          EndLoc, Context.getSourceManager(), Context.getLangOpts())) {
-    return Next->is(clang::tok::TokenKind::semi) ? Next : None;
+static bool isOriginMacroBody(const clang::SourceManager &source_manager,
+                              clang::SourceLocation loc) {
+  while (loc.isMacroID()) {
+    if (source_manager.isMacroBodyExpansion(loc)) return true;
+    // Otherwise, it must be in an argument, so we continue searching up the
+    // invocation stack. getImmediateMacroCallerLoc() gives the location of the
+    // argument text, inside the call text.
+    loc = source_manager.getImmediateMacroCallerLoc(loc);
   }
-  return None;
-}
-
-static const clang::Stmt *getStatementParent(const clang::Stmt &node,
-                                             ASTContext &context) {
-  using namespace ast_matchers;
-
-  auto is_or_has_node =
-      anyOf(equalsNode(&node), hasDescendant(equalsNode(&node)));
-  auto not_in_condition = unless(hasCondition(is_or_has_node));
-  // Note that SwitchCase nodes have the subsequent statement as substatement.
-  // For example, in "case 1: a(); b();", a() will be the child of the
-  // SwitchCase "case 1:".
-  // TODO(djasper): Also handle other labels, probably not important in google3.
-  // missing: switchStmt() (although this is a weird corner case).
-  auto statement = stmt(hasParent(
-      stmt(anyOf(compoundStmt(), whileStmt(not_in_condition),
-                 doStmt(not_in_condition), switchCase(),
-                 ifStmt(not_in_condition),
-                 forStmt(not_in_condition, unless(hasIncrement(is_or_has_node)),
-                         unless(hasLoopInit(is_or_has_node)))))
-          .bind("parent")));
-  return selectFirst<const clang::Stmt>("parent",
-                                        match(statement, node, context));
-}
-
-// Is a real statement (not an expression inside another expression). That is,
-// not an expression with an expression parent.
-static bool isRealStatement(const Stmt &S, ASTContext &Context) {
-  return !isa<Expr>(S) || getStatementParent(S, Context) != nullptr;
-}
-
-// For all non-expression statements, extend the source to include any trailing
-// semi. Returns a SourceRange representing a token range.
-static SourceRange getTokenRange(const Stmt &S, ASTContext &Context) {
-  if (isRealStatement(S, Context)) {
-    // TODO: exclude case where last token is a right brace?
-    if (auto Tok = getTrailingSemi(S.getEndLoc(), Context))
-      return SourceRange(S.getBeginLoc(), Tok->getLocation());
-  }
-  return S.getSourceRange();
-}
-
-static SourceRange getTokenRange(const ast_type_traits::DynTypedNode &Node,
-                                 ASTContext &Context) {
-  if (const auto *S = Node.get<Stmt>())
-    return getTokenRange(*S, Context);
-  return Node.getSourceRange();
+  return false;
 }
 
 static llvm::Error invalidArgumentError(llvm::Twine Message) {
@@ -108,7 +62,7 @@ static llvm::Error unboundNodeError(StringRef Role, StringRef Id) {
 }
 
 static llvm::Error typeError(llvm::Twine Message,
-                             const clang::ast_type_traits::ASTNodeKind& Kind) {
+                             const clang::ast_type_traits::ASTNodeKind &Kind) {
   return invalidArgumentError(Message + " (node kind is " + Kind.asStringRef() +
                               ")");
 }
@@ -120,7 +74,7 @@ static llvm::Error missingPropertyError(llvm::Twine Description,
 }
 
 // Verifies that `node` is appropriate for the given `target_part`.
-static Error verifyTarget(const clang::ast_type_traits::DynTypedNode& Node,
+static Error verifyTarget(const clang::ast_type_traits::DynTypedNode &Node,
                           NodePart TargetPart) {
   switch (TargetPart) {
     case NodePart::kNode:
@@ -132,19 +86,19 @@ static Error verifyTarget(const clang::ast_type_traits::DynTypedNode& Node,
       return typeError("NodePart::kMember applied to non-MemberExpr",
                        Node.getNodeKind());
     case NodePart::kName:
-      if (const auto* D = Node.get<clang::NamedDecl>()) {
+      if (const auto *D = Node.get<clang::NamedDecl>()) {
         if (D->getDeclName().isIdentifier()) {
           return Error::success();
         }
         return missingPropertyError("NodePart::kName", "identifier");
       }
-      if (const auto* E = Node.get<clang::DeclRefExpr>()) {
+      if (const auto *E = Node.get<clang::DeclRefExpr>()) {
         if (E->getNameInfo().getName().isIdentifier()) {
           return Error::success();
         }
         return missingPropertyError("NodePart::kName", "identifier");
       }
-      if (const auto* I = Node.get<clang::CXXCtorInitializer>()) {
+      if (const auto *I = Node.get<clang::CXXCtorInitializer>()) {
         if (I->isMemberInitializer()) {
           return Error::success();
         }
@@ -167,13 +121,13 @@ static SourceRange getTarget(const clang::ast_type_traits::DynTypedNode &Node,
     case NodePart::kMember:
       return SourceRange(Node.get<clang::MemberExpr>()->getMemberLoc());
     case NodePart::kName:
-      if (const auto* D = Node.get<clang::NamedDecl>()) {
+      if (const auto *D = Node.get<clang::NamedDecl>()) {
         return SourceRange(D->getLocation());
       }
-      if (const auto* E = Node.get<clang::DeclRefExpr>()) {
+      if (const auto *E = Node.get<clang::DeclRefExpr>()) {
         return SourceRange(E->getLocation());
       }
-      if (const auto* I = Node.get<clang::CXXCtorInitializer>()) {
+      if (const auto *I = Node.get<clang::CXXCtorInitializer>()) {
         return SourceRange(I->getMemberLocation());
       }
       // This should be unreachable if the target was already verified.
@@ -182,19 +136,6 @@ static SourceRange getTarget(const clang::ast_type_traits::DynTypedNode &Node,
           "CXXCtorInitializer");
   }
   llvm_unreachable("Unexpected case in NodePart type.");
-}
-
-// TODO: move to shared utility lib.
-static bool isOriginMacroBody(const clang::SourceManager& source_manager,
-                       clang::SourceLocation loc) {
-  while (loc.isMacroID()) {
-    if (source_manager.isMacroBodyExpansion(loc)) return true;
-    // Otherwise, it must be in an argument, so we continue searching up the
-    // invocation stack. getImmediateMacroCallerLoc() gives the location of the
-    // argument text, inside the call text.
-    loc = source_manager.getImmediateMacroCallerLoc(loc);
-  }
-  return false;
 }
 
 namespace internal {
@@ -232,26 +173,26 @@ Expected<Transformation> transform(const MatchResult &Result,
     return ReplacementOrErr.takeError();
   }
 }
-} // namespace internal
+}  // namespace internal
 
 RewriteRule::RewriteRule()
     : Matcher(stmt()), Target(RootId), TargetPart(NodePart::kNode) {}
 
 constexpr char RewriteRule::RootId[];
 
-RewriteRule& RewriteRule::where(
-    std::function<bool(const MatchResult& Result)> FilterFn) & {
+RewriteRule &RewriteRule::where(
+    std::function<bool(const MatchResult &Result)> FilterFn) & {
   Filter = MatchFilter(std::move(FilterFn));
   return *this;
 }
 
-RewriteRule& RewriteRule::change(const NodeId& TargetId, NodePart Part) & {
+RewriteRule &RewriteRule::change(const NodeId &TargetId, NodePart Part) & {
   Target = std::string(TargetId.id());
   TargetPart = Part;
   return *this;
 }
 
-RewriteRule& RewriteRule::replaceWith(Stencil S) & {
+RewriteRule &RewriteRule::replaceWith(Stencil S) & {
   Replacement = std::move(S);
   return *this;
 }
@@ -264,32 +205,31 @@ RewriteRule makeRule(StatementMatcher Matcher, Stencil Replacement,
       .explain(std::move(Explanation));
 }
 
-void Transformer::registerMatchers(MatchFinder* MatchFinder) {
+void Transformer::registerMatchers(MatchFinder *MatchFinder) {
   MatchFinder->addDynamicMatcher(Rule.matcher(), this);
 }
 
-void Transformer::run(const MatchResult& Result) {
+void Transformer::run(const MatchResult &Result) {
   auto ChangeOrErr = internal::transform(Result, Rule);
   if (auto Err = ChangeOrErr.takeError()) {
     llvm::errs() << "Rewrite failed: " << llvm::toString(std::move(Err))
                  << "\n";
     return;
   }
-  auto& Change = *ChangeOrErr;
-  auto& Range = Change.Range;
+  auto &Change = *ChangeOrErr;
+  auto &Range = Change.Range;
   if (Range.isInvalid()) {
     // No rewrite applied (but no error encountered either).
     return;
   }
   AtomicChange AC(*Result.SourceManager, Range.getBegin());
-  if (auto Err = AC.replace(*Result.SourceManager, Range,
-                                      Change.Replacement)) {
+  if (auto Err = AC.replace(*Result.SourceManager, Range, Change.Replacement)) {
     AC.setError(llvm::toString(std::move(Err)));
   } else {
-    for (const auto& header : Rule.replacement().addedIncludes()) {
+    for (const auto &header : Rule.replacement().addedIncludes()) {
       AC.addHeader(header);
     }
-    for (const auto& header : Rule.replacement().removedIncludes()) {
+    for (const auto &header : Rule.replacement().removedIncludes()) {
       AC.removeHeader(header);
     }
   }
@@ -297,18 +237,18 @@ void Transformer::run(const MatchResult& Result) {
 }
 
 MultiTransformer::MultiTransformer(std::vector<RewriteRule> Rules,
-                             const Transformer::ChangeConsumer& Consumer,
-                             MatchFinder* MF) {
-  for (auto& R : Rules) {
+                                   const Transformer::ChangeConsumer &Consumer,
+                                   MatchFinder *MF) {
+  for (auto &R : Rules) {
     Transformers.emplace_back(std::move(R), Consumer);
     Transformers.back().registerMatchers(MF);
   }
 }
 
 static llvm::SmallVector<clang::ast_matchers::BoundNodes, 1> match(
-    const DynTypedMatcher& Matcher,
-    const clang::ast_type_traits::DynTypedNode& Node,
-    clang::ASTContext* Context) {
+    const DynTypedMatcher &Matcher,
+    const clang::ast_type_traits::DynTypedNode &Node,
+    clang::ASTContext *Context) {
   clang::ast_matchers::internal::CollectMatchesCallback Callback;
   MatchFinder Finder;
   Finder.addDynamicMatcher(Matcher, &Callback);
@@ -317,8 +257,8 @@ static llvm::SmallVector<clang::ast_matchers::BoundNodes, 1> match(
 }
 
 Expected<Optional<std::string>> maybeTransform(
-    const RewriteRule& Rule, const clang::ast_type_traits::DynTypedNode& Node,
-    clang::ASTContext* Context) {
+    const RewriteRule &Rule, const clang::ast_type_traits::DynTypedNode &Node,
+    clang::ASTContext *Context) {
   auto Matches = match(Rule.matcher(), Node, Context);
   if (Matches.empty()) {
     return llvm::None;
@@ -331,7 +271,7 @@ Expected<Optional<std::string>> maybeTransform(
   if (auto Err = ChangeOrErr.takeError()) {
     return std::move(Err);
   }
-  auto& Change = *ChangeOrErr;
+  auto &Change = *ChangeOrErr;
   if (Change.Range.isInvalid()) {
     return llvm::None;
   }

@@ -19,7 +19,16 @@ namespace clang {
 namespace tidy {
 namespace utils {
 
-// A ClangTidy encompassing a single rewrite rule.
+// A base class for defining a ClangTidy check based on a rewrite rule.
+//
+// For example, given a RewriteRule `MyCheckAsRewriteRule`, one can define your
+// tidy check as follows:
+//
+// class MyTidyCheck : public TransformerTidy {
+//  public:
+//   MyTidyCheck(StringRef Name, ClangTidyContext *Context)
+//       : TransformerTidy(MyCheckAsRewriteRule, Name, Context) {}
+// };
 class TransformerTidy : public ClangTidyCheck {
 public:
   TransformerTidy(tooling::RewriteRule R, StringRef Name,

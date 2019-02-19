@@ -116,6 +116,64 @@ FixItHint createReplacement(const D &Destination, StringRef Source) {
                                       Source);
 }
 
+// Finds the start location of the first token starting before `Start`. Returns
+// an invalid location if no previous token is found.
+SourceLocation findPreviousTokenStart(SourceLocation Start,
+                                      const SourceManager &SM,
+                                      const LangOptions &LangOpts);
+
+// Finds the start location of the first token of the given kind starting before
+// `Start`. Returns an invalid location if none is found.
+SourceLocation findPreviousTokenKind(SourceLocation Start,
+                                     const SourceManager &SM,
+                                     const LangOptions &LangOpts,
+                                     tok::TokenKind TK);
+
+// Finds the open paren of the call expression and return its location. Returns
+// an invalid location if no open paren is found.
+SourceLocation findOpenParen(const CallExpr &E, const SourceManager &SM,
+                             const LangOptions &LangOpts);
+
+// Conservatively estimates whether the given expression should be wrapped in
+// parentheses when printing (to avoid misinterpretation during parsing),
+// assuming no other information about the surrounding context.
+bool needsParens(const Expr &E);
+
+// Returns true if expr needs to be put in parens to be parsed correctly when it
+// is the target of a dot or arrow. For example, `*x` needs parens in this
+// context or the resulting expression will be misparsed: `*x.f` is parsed as
+// `*(x.f)` while the intent is `(*x).f`.
+bool needParensBeforeDotOrArrow(const Expr &Expr);
+
+// Returns true if expr needs to be put in parens to be parsed correctly when it
+// is the operand of a unary operator; for example, when it is a binary or
+// ternary operator syntactically.
+bool needParensAfterUnaryOperator(const Expr &ExprNode);
+
+// Formats a pointer to an expression: prefix with '*' but simplify when it
+// already begins with '&'.  Return empty string on failure.
+std::string formatDereference(const ASTContext &Context, const Expr &ExprNode);
+
+// Formats a pointer to an expression: prefix with '&' but simplify when it
+// already begins with '*'.  Returns empty string on failure.
+std::string formatAddressOf(const ASTContext &Context, const Expr &Expr);
+
+// Adds a dot to the end of the given expression, but adds parentheses when
+// needed by the syntax, and simplifies to `->` when possible, e.g.:
+//
+//  x becomes x.
+//  *a becomes a->
+//  a+b becomes (a+b).
+std::string formatDot(const ASTContext &Context, const Expr &Expr);
+
+// Adds an arrow to the end of the given expression, but adds parentheses
+// when needed by the syntax, and simplifies to `.` when possible, e.g.:
+//
+//  x becomes x->
+//  &a becomes a.
+//  a+b becomes (a+b)->
+std::string formatArrow(const ASTContext &Context, const Expr &Expr);
+
 } // end namespace fixit
 } // end namespace tooling
 } // end namespace clang

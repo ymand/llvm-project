@@ -79,20 +79,20 @@ using ast_matchers::internal::DynTypedMatcher;
 class MatchFilter {
  public:
   using Predicate =
-      std::function<bool(const ast_matchers::MatchFinder::MatchResult& Result)>;
+      std::function<bool(const ast_matchers::MatchFinder::MatchResult &Result)>;
 
   MatchFilter()
-      : Filter([](const ast_matchers::MatchFinder::MatchResult&) {
+      : Filter([](const ast_matchers::MatchFinder::MatchResult &) {
           return true;
         }) {}
   explicit MatchFilter(Predicate P) : Filter(std::move(P)) {}
 
-  MatchFilter(const MatchFilter&) = default;
-  MatchFilter(MatchFilter&&) = default;
-  MatchFilter& operator=(const MatchFilter&) = default;
-  MatchFilter& operator=(MatchFilter&&) = default;
+  MatchFilter(const MatchFilter &) = default;
+  MatchFilter(MatchFilter &&) = default;
+  MatchFilter &operator=(const MatchFilter &) = default;
+  MatchFilter &operator=(MatchFilter &&) = default;
 
-  bool matches(const ast_matchers::MatchFinder::MatchResult& Result) const {
+  bool matches(const ast_matchers::MatchFinder::MatchResult &Result) const {
     return Filter(Result);
   }
 
@@ -163,92 +163,90 @@ class RewriteRule {
  public:
   RewriteRule();
 
-  RewriteRule(const RewriteRule&) = default;
-  RewriteRule(RewriteRule&&) = default;
-  RewriteRule& operator=(const RewriteRule&) = default;
-  RewriteRule& operator=(RewriteRule&&) = default;
+  RewriteRule(const RewriteRule &) = default;
+  RewriteRule(RewriteRule &&) = default;
+  RewriteRule &operator=(const RewriteRule &) = default;
+  RewriteRule &operator=(RewriteRule &&) = default;
 
   // `Matching()` supports all top-level nodes in the AST hierarchy.  We spell
   // out all of the permitted overloads, rather than defining a template, for
   // documentation purposes and to give the user clear error messages if they
   // pass a node that is not one of the permitted types.
-  RewriteRule& matching(CXXCtorInitializerMatcher M) & {
+  RewriteRule &matching(CXXCtorInitializerMatcher M) & {
     return setMatcher(std::move(M));
   }
-  RewriteRule& matching(DeclarationMatcher M) & {
+  RewriteRule &matching(DeclarationMatcher M) & {
     return setMatcher(std::move(M));
   }
-  RewriteRule& matching(NestedNameSpecifierMatcher M) & {
+  RewriteRule &matching(NestedNameSpecifierMatcher M) & {
     return setMatcher(std::move(M));
   }
-  RewriteRule& matching(NestedNameSpecifierLocMatcher M) & {
+  RewriteRule &matching(NestedNameSpecifierLocMatcher M) & {
     return setMatcher(std::move(M));
   }
-  RewriteRule& matching(StatementMatcher M) & {
+  RewriteRule &matching(StatementMatcher M) & {
     return setMatcher(std::move(M));
   }
-  RewriteRule& matching(TemplateArgumentMatcher M) & {
+  RewriteRule &matching(TemplateArgumentMatcher M) & {
     return setMatcher(std::move(M));
   }
-  RewriteRule& matching(TemplateNameMatcher M) & {
+  RewriteRule &matching(TemplateNameMatcher M) & {
     return setMatcher(std::move(M));
   }
-  RewriteRule& matching(TypeLocMatcher M) & {
-    return setMatcher(std::move(M));
-  }
-  RewriteRule& matching(TypeMatcher M) & { return setMatcher(std::move(M)); }
+  RewriteRule &matching(TypeLocMatcher M) & { return setMatcher(std::move(M)); }
+  RewriteRule &matching(TypeMatcher M) & { return setMatcher(std::move(M)); }
 
   template <typename MatcherT>
-  RewriteRule&& matching(MatcherT M) && {
+  RewriteRule &&matching(MatcherT M) && {
     return std::move(matching(std::move(M)));
   }
 
-  RewriteRule& where(MatchFilter::Predicate Filter) &;
-  RewriteRule&& where(MatchFilter::Predicate Filter) && {
+  RewriteRule &where(MatchFilter::Predicate Filter) &;
+  RewriteRule &&where(MatchFilter::Predicate Filter) && {
     return std::move(where(std::move(Filter)));
   }
 
-  RewriteRule& change(const NodeId& Target, NodePart Part = NodePart::kNode) &;
-  RewriteRule&& change(const NodeId& Target,
+  RewriteRule &change(const NodeId &Target, NodePart Part = NodePart::kNode) &;
+  RewriteRule &&change(const NodeId &Target,
                        NodePart Part = NodePart::kNode) && {
     return std::move(change(Target, Part));
   }
 
-  RewriteRule& replaceWith(Stencil S) &;
-  RewriteRule&& replaceWith(Stencil S) && {
+  RewriteRule &replaceWith(Stencil S) &;
+  RewriteRule &&replaceWith(Stencil S) && {
     return std::move(replaceWith(std::move(S)));
   }
 
   template <typename... Ts>
-  RewriteRule& replaceWith(Ts&&... Args) & {
+  RewriteRule &replaceWith(Ts &&... Args) & {
     Replacement = Stencil::cat(std::forward<Ts>(Args)...);
     return *this;
   }
   template <typename... Ts>
-  RewriteRule&& replaceWith(Ts&&... Args) && {
+  RewriteRule &&replaceWith(Ts &&... Args) && {
     return std::move(replaceWith(std::forward<Ts>(Args)...));
   }
 
   template <typename... Ts>
-  RewriteRule& explain(Ts&&... Args) & {
+  RewriteRule &explain(Ts &&... Args) & {
     Explanation = Stencil::cat(std::forward<Ts>(Args)...);
     return *this;
   }
   template <typename... Ts>
-  RewriteRule&& explain(Ts&&... Args) && {
+  RewriteRule &&explain(Ts &&... Args) && {
     return std::move(explain(std::forward<Ts>(Args)...));
   }
 
-  const DynTypedMatcher& matcher() const { return Matcher; }
-  const MatchFilter& filter() const { return Filter; }
+  const DynTypedMatcher &matcher() const { return Matcher; }
+  const MatchFilter &filter() const { return Filter; }
   llvm::StringRef target() const { return Target; }
   NodePart targetPart() const { return TargetPart; }
-  const Stencil& replacement() const { return Replacement; }
-  const Stencil& explanation() const { return Explanation; }
+  const Stencil &replacement() const { return Replacement; }
+  const Stencil &explanation() const { return Explanation; }
 
  private:
   template <typename MatcherT>
-  RewriteRule& setMatcher(MatcherT M) & {
+  RewriteRule &setMatcher(MatcherT M) & {
     auto DM = DynTypedMatcher(M);
     DM.setAllowBind(true);
     // The default target is `RootId`, so we bind it here. `tryBind` is
@@ -282,18 +280,18 @@ RewriteRule makeRule(StatementMatcher Matcher, Stencil Replacement,
 class Transformer : public ast_matchers::MatchFinder::MatchCallback {
  public:
   using ChangeConsumer =
-      std::function<void(const clang::tooling::AtomicChange& Change)>;
+      std::function<void(const clang::tooling::AtomicChange &Change)>;
 
   Transformer(RewriteRule Rule, ChangeConsumer Consumer)
       : Rule(std::move(Rule)), Consumer(std::move(Consumer)) {}
 
   // N.B. Passes `this` pointer to `match_finder`.  So, this object should not
   // be moved after this call.
-  void registerMatchers(ast_matchers::MatchFinder* MatchFinder);
+  void registerMatchers(ast_matchers::MatchFinder *MatchFinder);
 
   // Not called directly by users -- called by the framework, via base class
   // pointer.
-  void run(const ast_matchers::MatchFinder::MatchResult& Result) override;
+  void run(const ast_matchers::MatchFinder::MatchResult &Result) override;
 
  private:
   RewriteRule Rule;
@@ -304,8 +302,8 @@ class Transformer : public ast_matchers::MatchFinder::MatchCallback {
 class MultiTransformer {
  public:
   MultiTransformer(std::vector<RewriteRule> Rules,
-                   const Transformer::ChangeConsumer& Consumer,
-                   ast_matchers::MatchFinder* MF);
+                   const Transformer::ChangeConsumer &Consumer,
+                   ast_matchers::MatchFinder *MF);
 
  private:
   // Transformers register their `this` pointer with MatchFinder, so we use
@@ -323,12 +321,12 @@ class MultiTransformer {
 // * if the rewrite does not apply (but no errors encountered), returns `None`.
 // * if there is a failure, returns an `Error`.
 llvm::Expected<llvm::Optional<std::string>> maybeTransform(
-    const RewriteRule& Rule, const ast_type_traits::DynTypedNode& Node,
-    ASTContext* Context);
+    const RewriteRule &Rule, const ast_type_traits::DynTypedNode &Node,
+    ASTContext *Context);
 
 template <typename T>
 llvm::Expected<llvm::Optional<std::string>> maybeTransform(
-    const RewriteRule& Rule, const T& Node, ASTContext* Context) {
+    const RewriteRule &Rule, const T &Node, ASTContext *Context) {
   return maybeTransform(Rule, ast_type_traits::DynTypedNode::create(Node),
                         Context);
 }
@@ -336,7 +334,7 @@ llvm::Expected<llvm::Optional<std::string>> maybeTransform(
 // Binds the node described by `matcher` to the given node id.
 template <typename T>
 ast_matchers::internal::Matcher<T> bind(
-    const NodeId& Id, ast_matchers::internal::BindableMatcher<T> Matcher) {
+    const NodeId &Id, ast_matchers::internal::BindableMatcher<T> Matcher) {
   return Matcher.bind(Id.id());
 }
 
@@ -351,10 +349,10 @@ struct Transformation {
 // Given a match and rule, tries to generate a transformation for the target of
 // the rule. Fails if the match is not eligible for rewriting or any invariants
 // are violated relating to bound nodes in the match.
-Expected<Transformation>
-transform(const ast_matchers::MatchFinder::MatchResult &Result,
-          const RewriteRule &Rule);
-} // namespace internal
+Expected<Transformation> transform(
+    const ast_matchers::MatchFinder::MatchResult &Result,
+    const RewriteRule &Rule);
+}  // namespace internal
 }  // namespace tooling
 }  // namespace clang
 

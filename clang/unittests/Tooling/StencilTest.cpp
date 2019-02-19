@@ -45,11 +45,13 @@ using ::clang::tooling::stencil_generators::asAddress;
 using ::clang::tooling::stencil_generators::asValue;
 using ::clang::tooling::stencil_generators::member;
 using ::clang::tooling::stencil_generators::name;
+using ::clang::tooling::stencil_generators::node;
 using ::clang::tooling::stencil_generators::parens;
 using ::clang::tooling::stencil_generators::removeInclude;
 using ::clang::tooling::stencil_generators::text;
 
 using ::testing::Eq;
+using ::testing::Ne;
 
 // We can't directly match on llvm::Expected since its accessors mutate the
 // object. So, we collapse it to an Optional.
@@ -222,8 +224,6 @@ TEST_F(StencilTest, UnboundNode) {
 }
 
 TEST_F(StencilTest, NodeOp) {
-  using stencil_generators::node;
-
   const std::string Snippet = R"cc(
     int x;
     return x;
@@ -283,9 +283,9 @@ TEST_F(StencilTest, MemberOpThis) {
       int foo() { return x; }
     };
   )cc";
-  auto StmtMatch =
-      matchStmt(Snippet, returnStmt(hasReturnValue(ignoringImplicit(memberExpr(
-                             hasObjectExpression(expr().bind("obj")))))));
+  auto StmtMatch = matchStmt(
+      Snippet, returnStmt(hasReturnValue(ignoringImplicit(
+                   memberExpr(hasObjectExpression(expr().bind("obj")))))));
   ASSERT_TRUE(StmtMatch);
   const Stencil Stencil = Stencil::cat(member("obj", "field"));
   EXPECT_THAT(toOptional(Stencil.eval(StmtMatch->Result)),
@@ -627,6 +627,60 @@ TEST_F(StencilTest, RemoveIncludeOp) {
               testing::UnorderedElementsAre("include/me.h"));
 }
 
-} // namespace
-} // namespace tooling
-} // namespace clang
+using stencil_generators::apply;
+
+TEST(StencilEqualityTest, Equality) {
+  using stencil_generators::dPrint;
+  auto Lhs = Stencil::cat(addInclude("foo/bar.h"), removeInclude("bar/baz.h"),
+                          "foo", node("node"), member("node", text("bar")),
+                          asValue("value_id"), asAddress("addr_id"),
+                          parens("parens_id"), name("name_id"), args("args_id"),
+                          dPrint("dprint_id"));
+  auto Rhs = Lhs;
+  EXPECT_THAT(Lhs, Eq(Rhs));
+}
+
+TEST(StencilEqualityTest, InEqualityDifferentOrdering) {
+  auto Lhs = Stencil::cat("foo", node("node"), member("node", text("bar")));
+  auto Rhs = Stencil::cat(member("node", text("bar")), "foo", node("node"));
+  EXPECT_THAT(Lhs, Ne(Rhs));
+}
+
+TEST(StencilEqualityTest, InEqualityDifferentSizes) {
+  auto Lhs = Stencil::cat("foo", node("node"), member("node", text("bar")));
+  auto Rhs = Stencil::cat(removeInclude("foo/bar.h"), "foo", node("node"),
+                          member("node", text("bar")));
+  EXPECT_THAT(Lhs, Ne(Rhs));
+}
+
+TEST(StencilEqualityTest, InEqualityDifferentExpOp) {
+  auto Lhs = Stencil::cat(asValue("id"));
+  auto Rhs = Stencil::cat(asAddress("id"));
+  EXPECT_THAT(Lhs, Ne(Rhs));
+}
+
+TEST(StencilEqualityTest, InEqualityDifferentMemberParts) {
+  auto Lhs = Stencil::cat(member("id", node("bar")));
+  auto Rhs = Stencil::cat(member("id", text("foo")));
+  EXPECT_THAT(Lhs, Ne(Rhs));
+}
+
+TEST(StencilEqualityTest, NodeFunctionOpNotComparable) {
+  auto SimpleFn = [](const clang::ast_type_traits::DynTypedNode &Node,
+                     const clang::ASTContext &Context) {
+    return fixit::getText(Node, Context).str();
+  };
+  auto Lhs = Stencil::cat(apply(SimpleFn, "id0"));
+  auto Rhs = Stencil::cat(apply(SimpleFn, "id0"));
+  EXPECT_THAT(Lhs, Ne(Rhs));
+}
+
+TEST(StencilEqualityTest, StringFunctionOp) {
+  auto SimpleFn = [](llvm::StringRef S) { return (S + " - 3").str(); };
+  auto Lhs = Stencil::cat(apply(SimpleFn, "id0"));
+  auto Rhs = Stencil::cat(apply(SimpleFn, "id0"));
+  EXPECT_THAT(Lhs, Ne(Rhs));
+}
+}  // namespace
+}  // namespace tooling
+}  // namespace clang
