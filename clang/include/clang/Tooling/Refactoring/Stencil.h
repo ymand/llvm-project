@@ -35,7 +35,7 @@ namespace tooling {
 // identifiers.  The strong type allows us to distinguish ids from arbitrary
 // text snippets in various parts of the API.
 class NodeId {
- public:
+public:
   explicit NodeId(std::string Id) : Id(std::move(Id)) {}
 
   // Creates a NodeId whose name is based on the id. Guarantees that unique ids
@@ -51,12 +51,12 @@ class NodeId {
   // Gets the AST node in `result` corresponding to this NodeId, if
   // any. Otherwise, returns null.
   template <typename Node>
-  const Node *getNodeAs(
-      const ast_matchers::MatchFinder::MatchResult &Result) const {
+  const Node *
+  getNodeAs(const ast_matchers::MatchFinder::MatchResult &Result) const {
     return Result.Nodes.getNodeAs<Node>(Id);
   }
 
- private:
+private:
   std::string Id;
 };
 
@@ -67,7 +67,7 @@ class NodeId {
 //
 // Users can create custom Stencil operations by implementing this interface.
 class StencilPartInterface {
- public:
+public:
   virtual ~StencilPartInterface() = default;
 
   // Evaluates this part to a string and appends it to `result`.
@@ -76,12 +76,12 @@ class StencilPartInterface {
 
   virtual std::unique_ptr<StencilPartInterface> clone() const = 0;
 
-  virtual bool isEqual(const StencilPartInterface& other) const = 0;
+  virtual bool isEqual(const StencilPartInterface &other) const = 0;
 
-  const void* typeId() const { return TypeId; }
+  const void *typeId() const { return TypeId; }
 
- protected:
-  StencilPartInterface(const void* DerivedId) : TypeId(DerivedId) {}
+protected:
+  StencilPartInterface(const void *DerivedId) : TypeId(DerivedId) {}
 
   // Since this is an abstract class, copying/assigning only make sense for
   // derived classes implementing `Clone()`.
@@ -90,13 +90,13 @@ class StencilPartInterface {
 
   // Unique identifier of the concrete type of this instance.  Supports safe
   // downcasting.
-  const void* TypeId;
+  const void *TypeId;
 };
 
 // A copyable facade for a std::unique_ptr<StencilPartInterface>. Copies result
 // in a copy of the underlying pointee object.
 class StencilPart {
- public:
+public:
   explicit StencilPart(std::unique_ptr<StencilPartInterface> Impl)
       : Impl(std::move(Impl)) {}
 
@@ -116,12 +116,14 @@ class StencilPart {
   }
 
   bool operator==(const StencilPart &Other) const {
-    if (Impl == Other.Impl) return true;
-    if (Impl == nullptr || Other.Impl == nullptr) return false;
+    if (Impl == Other.Impl)
+      return true;
+    if (Impl == nullptr || Other.Impl == nullptr)
+      return false;
     return Impl->isEqual(*(Other.Impl));
   }
 
- private:
+private:
   std::unique_ptr<StencilPartInterface> Impl;
 };
 
@@ -154,7 +156,7 @@ struct RemoveIncludeOp {
 // operations that together can be evaluated to (a fragment of) source code,
 // given a match result.
 class Stencil {
- public:
+public:
   Stencil() = default;
 
   Stencil(const Stencil &) = default;
@@ -163,8 +165,7 @@ class Stencil {
   Stencil &operator=(Stencil &&) = default;
 
   // Compose a stencil from a series of parts.
-  template <typename... Ts>
-  static Stencil cat(Ts &&... Parts) {
+  template <typename... Ts> static Stencil cat(Ts &&... Parts) {
     Stencil Stencil;
     Stencil.Parts.reserve(sizeof...(Parts));
     auto Unused = {(Stencil.append(std::forward<Ts>(Parts)), true)...};
@@ -178,8 +179,8 @@ class Stencil {
   // Evaluates the stencil given a match result. Requires that the nodes in the
   // result includes any ids referenced in the stencil. References to missing
   // nodes will result in an invalid_argument error.
-  llvm::Expected<std::string> eval(
-      const ast_matchers::MatchFinder::MatchResult &Match) const;
+  llvm::Expected<std::string>
+  eval(const ast_matchers::MatchFinder::MatchResult &Match) const;
 
   // List of paths for which an include directive should be added. See
   // AddIncludeOp for the meaning of the path strings.
@@ -200,7 +201,7 @@ class Stencil {
 
   bool operator!=(const Stencil &Other) const { return !(*this == Other); }
 
- private:
+private:
   void append(const NodeId &Id);
   void append(llvm::StringRef Text);
   void append(StencilPart Part) { Parts.push_back(std::move(Part)); }

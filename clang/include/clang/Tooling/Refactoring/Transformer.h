@@ -34,9 +34,8 @@ namespace tooling {
 // Derivation of NodeId that identifies the intended node type for the id, which
 // allows us to select appropriate overloads or constrain use of various
 // combinators. `Node` is the AST node type corresponding to this id.
-template <typename Node>
-class TypedNodeId : public NodeId {
- public:
+template <typename Node> class TypedNodeId : public NodeId {
+public:
   using NodeId::NodeId;
   using MatcherType = ast_matchers::internal::Matcher<Node>;
 
@@ -77,7 +76,7 @@ using ast_matchers::internal::DynTypedMatcher;
 // wraps a predicate, but we may extend the functionality to support a simple
 // boolean expression language for constructing filters.
 class MatchFilter {
- public:
+public:
   using Predicate =
       std::function<bool(const ast_matchers::MatchFinder::MatchResult &Result)>;
 
@@ -96,7 +95,7 @@ class MatchFilter {
     return Filter(Result);
   }
 
- private:
+private:
   Predicate Filter;
 };
 
@@ -160,7 +159,7 @@ enum class NodePart {
 //
 //   RewriteRule r =  RewriteRule().Pattern()...
 class RewriteRule {
- public:
+public:
   RewriteRule();
 
   RewriteRule(const RewriteRule &) = default;
@@ -196,8 +195,7 @@ class RewriteRule {
   RewriteRule &matching(TypeLocMatcher M) & { return setMatcher(std::move(M)); }
   RewriteRule &matching(TypeMatcher M) & { return setMatcher(std::move(M)); }
 
-  template <typename MatcherT>
-  RewriteRule &&matching(MatcherT M) && {
+  template <typename MatcherT> RewriteRule &&matching(MatcherT M) && {
     return std::move(matching(std::move(M)));
   }
 
@@ -217,23 +215,19 @@ class RewriteRule {
     return std::move(replaceWith(std::move(S)));
   }
 
-  template <typename... Ts>
-  RewriteRule &replaceWith(Ts &&... Args) & {
+  template <typename... Ts> RewriteRule &replaceWith(Ts &&... Args) & {
     Replacement = Stencil::cat(std::forward<Ts>(Args)...);
     return *this;
   }
-  template <typename... Ts>
-  RewriteRule &&replaceWith(Ts &&... Args) && {
+  template <typename... Ts> RewriteRule &&replaceWith(Ts &&... Args) && {
     return std::move(replaceWith(std::forward<Ts>(Args)...));
   }
 
-  template <typename... Ts>
-  RewriteRule &explain(Ts &&... Args) & {
+  template <typename... Ts> RewriteRule &explain(Ts &&... Args) & {
     Explanation = Stencil::cat(std::forward<Ts>(Args)...);
     return *this;
   }
-  template <typename... Ts>
-  RewriteRule &&explain(Ts &&... Args) && {
+  template <typename... Ts> RewriteRule &&explain(Ts &&... Args) && {
     return std::move(explain(std::forward<Ts>(Args)...));
   }
 
@@ -244,9 +238,8 @@ class RewriteRule {
   const Stencil &replacement() const { return Replacement; }
   const Stencil &explanation() const { return Explanation; }
 
- private:
-  template <typename MatcherT>
-  RewriteRule &setMatcher(MatcherT M) & {
+private:
+  template <typename MatcherT> RewriteRule &setMatcher(MatcherT M) & {
     auto DM = DynTypedMatcher(M);
     DM.setAllowBind(true);
     // The default target is `RootId`, so we bind it here. `tryBind` is
@@ -278,7 +271,7 @@ RewriteRule makeRule(StatementMatcher Matcher, Stencil Replacement,
 // A class that handles the matcher and callback registration for a single
 // rewrite rule, as defined by the arguments of the constructor.
 class Transformer : public ast_matchers::MatchFinder::MatchCallback {
- public:
+public:
   using ChangeConsumer =
       std::function<void(const clang::tooling::AtomicChange &Change)>;
 
@@ -293,19 +286,19 @@ class Transformer : public ast_matchers::MatchFinder::MatchCallback {
   // pointer.
   void run(const ast_matchers::MatchFinder::MatchResult &Result) override;
 
- private:
+private:
   RewriteRule Rule;
   ChangeConsumer Consumer;
 };
 
 // Convenience class to manage creation and storage of multiple rewriters.
 class MultiTransformer {
- public:
+public:
   MultiTransformer(std::vector<RewriteRule> Rules,
                    const Transformer::ChangeConsumer &Consumer,
                    ast_matchers::MatchFinder *MF);
 
- private:
+private:
   // Transformers register their `this` pointer with MatchFinder, so we use
   // a deque to ensure stable pointers for each Transformer.
   std::deque<Transformer> Transformers;
@@ -320,21 +313,21 @@ class MultiTransformer {
 //   for the given node,
 // * if the rewrite does not apply (but no errors encountered), returns `None`.
 // * if there is a failure, returns an `Error`.
-llvm::Expected<llvm::Optional<std::string>> maybeTransform(
-    const RewriteRule &Rule, const ast_type_traits::DynTypedNode &Node,
-    ASTContext *Context);
+llvm::Expected<llvm::Optional<std::string>>
+maybeTransform(const RewriteRule &Rule,
+               const ast_type_traits::DynTypedNode &Node, ASTContext *Context);
 
 template <typename T>
-llvm::Expected<llvm::Optional<std::string>> maybeTransform(
-    const RewriteRule &Rule, const T &Node, ASTContext *Context) {
+llvm::Expected<llvm::Optional<std::string>>
+maybeTransform(const RewriteRule &Rule, const T &Node, ASTContext *Context) {
   return maybeTransform(Rule, ast_type_traits::DynTypedNode::create(Node),
                         Context);
 }
 
 // Binds the node described by `matcher` to the given node id.
 template <typename T>
-ast_matchers::internal::Matcher<T> bind(
-    const NodeId &Id, ast_matchers::internal::BindableMatcher<T> Matcher) {
+ast_matchers::internal::Matcher<T>
+bind(const NodeId &Id, ast_matchers::internal::BindableMatcher<T> Matcher) {
   return Matcher.bind(Id.id());
 }
 
@@ -349,11 +342,11 @@ struct Transformation {
 // Given a match and rule, tries to generate a transformation for the target of
 // the rule. Fails if the match is not eligible for rewriting or any invariants
 // are violated relating to bound nodes in the match.
-Expected<Transformation> transform(
-    const ast_matchers::MatchFinder::MatchResult &Result,
-    const RewriteRule &Rule);
-}  // namespace internal
-}  // namespace tooling
-}  // namespace clang
+Expected<Transformation>
+transform(const ast_matchers::MatchFinder::MatchResult &Result,
+          const RewriteRule &Rule);
+} // namespace internal
+} // namespace tooling
+} // namespace clang
 
-#endif  // LLVM_CLANG_TOOLING_REFACTOR_TRANSFORMER_H_
+#endif // LLVM_CLANG_TOOLING_REFACTOR_TRANSFORMER_H_
