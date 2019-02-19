@@ -118,7 +118,7 @@ static SourceRange getTarget(const clang::ast_type_traits::DynTypedNode &Node,
                              NodePart TargetPart, ASTContext &Context) {
   switch (TargetPart) {
   case NodePart::kNode:
-    return getTokenRange(Node, Context);
+    return Node.getSourceRange();
   case NodePart::kMember:
     return SourceRange(Node.get<clang::MemberExpr>()->getMemberLoc());
   case NodePart::kName:

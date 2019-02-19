@@ -459,7 +459,7 @@ RewriteRule invertIf() {
   return RewriteRule()
       .matching(
           ifStmt(hasCondition(C.bind()), hasThen(T.bind()), hasElse(E.bind())))
-      .replaceWith("if(!(", C, ")) ", E, " else ", T);
+      .replaceWith("if(!(", C, ")) ", E, "; else ", T);
 }
 
 // Use the lvalue-ref overloads of the RewriteRule builder methods.
@@ -469,7 +469,7 @@ RewriteRule invertIfLvalue() {
   RewriteRule Rule;
   Rule.matching(
           ifStmt(hasCondition(C.bind()), hasThen(T.bind()), hasElse(E.bind())))
-      .replaceWith("if(!(", C, ")) ", E, " else ", T);
+      .replaceWith("if(!(", C, ")) ", E, "; else ", T);
   return Rule;
 }
 
