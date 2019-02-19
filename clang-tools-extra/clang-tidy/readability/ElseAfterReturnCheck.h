@@ -10,20 +10,21 @@
 #define LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_READABILITY_ELSEAFTERRETURNCHECK_H
 
 #include "../ClangTidyCheck.h"
+#include "../utils/TransformerTidy.h"
 
 namespace clang {
 namespace tidy {
 namespace readability {
 
+std::vector<tooling::RewriteRule> RewriteElseAfterBranch();
+
 /// Flags the usages of `else` after `return`.
 ///
 /// http://llvm.org/docs/CodingStandards.html#don-t-use-else-after-a-return
-class ElseAfterReturnCheck : public ClangTidyCheck {
+class ElseAfterReturnCheck : public utils::MultiTransformerTidy {
 public:
   ElseAfterReturnCheck(StringRef Name, ClangTidyContext *Context)
-      : ClangTidyCheck(Name, Context) {}
-  void registerMatchers(ast_matchers::MatchFinder *Finder) override;
-  void check(const ast_matchers::MatchFinder::MatchResult &Result) override;
+      : MultiTransformerTidy(RewriteElseAfterBranch(), Name, Context) {}
 };
 
 } // namespace readability
