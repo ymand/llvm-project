@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include "clang/Tooling/FixIt.h"
+#include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Lex/Lexer.h"
 
 namespace clang {
@@ -63,7 +64,11 @@ bool needsParens(const Expr &E) {
          isa<CXXOperatorCallExpr>(E) || isa<AbstractConditionalOperator>(E);
 }
 
-bool needParensBeforeDotOrArrow(const Expr &Expr) {
+// Returns true if expr needs to be put in parens to be parsed correctly when it
+// is the target of a dot or arrow. For example, `*x` needs parens in this
+// context or the resulting expression will be misparsed: `*x.f` is parsed as
+// `*(x.f)` while the intent is `(*x).f`.
+static bool needsParensBeforeDotOrArrow(const Expr &Expr) {
   // We always want parens around unary, binary, and ternary operators.
   if (dyn_cast<UnaryOperator>(&Expr) || dyn_cast<BinaryOperator>(&Expr) ||
       dyn_cast<ConditionalOperator>(&Expr)) {
@@ -81,7 +86,10 @@ bool needParensBeforeDotOrArrow(const Expr &Expr) {
   return false;
 }
 
-bool needParensAfterUnaryOperator(const Expr &ExprNode) {
+// Returns true if expr needs to be put in parens to be parsed correctly when it
+// is the operand of a unary operator; for example, when it is a binary or
+// ternary operator syntactically.
+static bool needsParensAfterUnaryOperator(const Expr &ExprNode) {
   if (isa<BinaryOperator>(&ExprNode) || isa<ConditionalOperator>(&ExprNode)) {
     return true;
   }
@@ -105,7 +113,7 @@ std::string formatDereference(const ASTContext &Context, const Expr &ExprNode) {
   if (Text.empty())
     return std::string();
   // Add leading '*'.
-  if (needParensAfterUnaryOperator(ExprNode)) {
+  if (needsParensAfterUnaryOperator(ExprNode)) {
     return (llvm::Twine("*(") + Text + ")").str();
   }
   return (llvm::Twine("*") + Text).str();
@@ -122,7 +130,7 @@ std::string formatAddressOf(const ASTContext &Context, const Expr &ExprNode) {
   const std::string Text = fixit::getText(ExprNode, Context);
   if (Text.empty())
     return std::string();
-  if (needParensAfterUnaryOperator(ExprNode)) {
+  if (needsParensAfterUnaryOperator(ExprNode)) {
     return (llvm::Twine("&(") + Text + ")").str();
   }
   return (llvm::Twine("&") + Text).str();
@@ -136,7 +144,7 @@ std::string formatDot(const ASTContext &Context, const Expr &ExprNode) {
       const std::string DerefText = fixit::getText(*SubExpr, Context);
       if (DerefText.empty())
         return std::string();
-      if (needParensBeforeDotOrArrow(*SubExpr)) {
+      if (needsParensBeforeDotOrArrow(*SubExpr)) {
         return (llvm::Twine("(") + DerefText + ")->").str();
       }
       return (llvm::Twine(DerefText) + "->").str();
@@ -146,7 +154,7 @@ std::string formatDot(const ASTContext &Context, const Expr &ExprNode) {
   const std::string Text = fixit::getText(ExprNode, Context);
   if (Text.empty())
     return std::string();
-  if (needParensBeforeDotOrArrow(ExprNode)) {
+  if (needsParensBeforeDotOrArrow(ExprNode)) {
     return (llvm::Twine("(") + Text + ").").str();
   }
   return (llvm::Twine(Text) + ".").str();
@@ -160,7 +168,7 @@ std::string formatArrow(const ASTContext &Context, const Expr &ExprNode) {
       const std::string DerefText = fixit::getText(*SubExpr, Context);
       if (DerefText.empty())
         return std::string();
-      if (needParensBeforeDotOrArrow(*SubExpr)) {
+      if (needsParensBeforeDotOrArrow(*SubExpr)) {
         return (llvm::Twine("(") + DerefText + ").").str();
       }
       return (llvm::Twine(DerefText) + ".").str();
@@ -170,20 +178,17 @@ std::string formatArrow(const ASTContext &Context, const Expr &ExprNode) {
   const std::string Text = fixit::getText(ExprNode, Context);
   if (Text.empty())
     return std::string();
-  if (needParensBeforeDotOrArrow(ExprNode)) {
+  if (needsParensBeforeDotOrArrow(ExprNode)) {
     return (llvm::Twine("(") + Text + ")->").str();
   }
   return (llvm::Twine(Text) + "->").str();
 }
 
-SourceLocation
-findOpenParen(const CallExpr &E,
-              const ast_matchers::MatchFinder::MatchResult &Result) {
+SourceLocation findOpenParen(const CallExpr &E, const SourceManager &SM,
+                             const LangOptions &LangOpts) {
   SourceLocation EndLoc =
       E.getNumArgs() == 0 ? E.getRParenLoc() : E.getArg(0)->getBeginLoc();
-  return findPreviousTokenKind(EndLoc, *Result.SourceManager,
-                               Result.Context->getLangOpts(),
-                               tok::TokenKind::l_paren);
+  return findPreviousTokenKind(EndLoc, SM, LangOpts, tok::TokenKind::l_paren);
 }
 } // end namespace fixit
 } // end namespace tooling

@@ -45,10 +45,12 @@ static size_t nextId() {
 static StringRef
 getArgumentsText(const CallExpr &CE,
                  const ast_matchers::MatchFinder::MatchResult &Result) {
+  auto &SM = *Result.SourceManager;
+  auto &LangOpts = Result.Context->getLangOpts();
   auto Range = CharSourceRange::getCharRange(
-      getOpenParen(CE, Result).getLocWithOffset(1), CE.getRParenLoc());
-  return Lexer::getSourceText(Range, Result.Context->getSourceManager(),
-                              Result.Context->getLangOpts());
+      fixit::findOpenParen(CE, SM, LangOpts).getLocWithOffset(1),
+      CE.getRParenLoc());
+  return Lexer::getSourceText(Range, SM, LangOpts);
 }
 
 // Gets the source text of the statements in the compound statement. Includes
@@ -58,7 +60,7 @@ getStatementsText(const CompoundStmt &CS,
                   const ast_matchers::MatchFinder::MatchResult &Result) {
   auto Range = CharSourceRange::getCharRange(
       CS.getLBracLoc().getLocWithOffset(1), CS.getRBracLoc());
-  return Lexer::getSourceText(Range, Result.Context->getSourceManager(),
+  return Lexer::getSourceText(Range, *Result.SourceManager,
                               Result.Context->getLangOpts());
 }
 
@@ -210,8 +212,8 @@ public:
     }
     if (!E->isImplicitCXXThis()) {
       *Result += E->getType()->isAnyPointerType()
-                     ? formatArrow(*Match.Context, *E)
-                     : formatDot(*Match.Context, *E);
+                     ? fixit::formatArrow(*Match.Context, *E)
+                     : fixit::formatDot(*Match.Context, *E);
     }
     return Member.eval(Match, Result);
   }
@@ -267,7 +269,7 @@ public:
     switch (Op) {
     case ExprOp::Operator::kValue:
       if (Expression->getType()->isAnyPointerType()) {
-        *Result += formatDereference(Context, *Expression);
+        *Result += fixit::formatDereference(Context, *Expression);
       } else {
         *Result += fixit::getText(*Expression, Context);
       }
@@ -276,11 +278,11 @@ public:
       if (Expression->getType()->isAnyPointerType()) {
         *Result += fixit::getText(*Expression, Context);
       } else {
-        *Result += formatAddressOf(Context, *Expression);
+        *Result += fixit::formatAddressOf(Context, *Expression);
       }
       break;
     case ExprOp::Operator::kParens:
-      if (needsParens(*Expression)) {
+      if (fixit::needsParens(*Expression)) {
         *Result += "(";
         *Result += fixit::getText(*Expression, Context);
         *Result += ")";
@@ -389,227 +391,248 @@ public:
     return llvm::make_unique<ArgsOp>(*this);
   }
 
-private:
   bool isEqual(const StencilPartInterface &Other) const override {
     if (const auto *OtherPtr = down_cast<ArgsOp>(&Other)) {
       return Id == OtherPtr->Id;
       std::string Id;
     };
+    return false;
+  }
 
-    // Given a reference to a statement, yields the contents between the braces,
-    // if it is compound, or the statement and its trailing semicolon (if any)
-    // otherwise.
-    class StatementsOp : public StencilPartInterface {
-    public:
-      explicit StatementsOp(StringRef Id) : Id(Id) {}
+private:
+  std::string Id;
+};
 
-      Error eval(const MatchFinder::MatchResult &Match,
-                 std::string *Result) const override {
-        if (const auto *CS = Match.Nodes.getNodeAs<CompoundStmt>(Id)) {
-          *Result += getStatementsText(*CS, Match);
-          return Error::success();
-        }
-        if (const auto *S = Match.Nodes.getNodeAs<Stmt>(Id)) {
-          *Result += getText(*S, *Match.Context);
-          return Error::success();
-        }
-        return llvm::make_error<StringError>(errc::invalid_argument,
-                                             "Id not bound: " + Id);
-      }
+// Given a reference to a statement, yields the contents between the braces,
+// if it is compound, or the statement and its trailing semicolon (if any)
+// otherwise.
+class StatementsOp : public StencilPartInterface {
+public:
+  explicit StatementsOp(StringRef Id)
+      : StencilPartInterface(ArgsOp::typeId()), Id(Id) {}
 
-      std::unique_ptr<StencilPartInterface> clone() const override {
-        return llvm::make_unique<StatementsOp>(*this);
-      }
+  static const void *typeId() {
+    static bool b;
+    return &b;
+  }
+  Error eval(const MatchFinder::MatchResult &Match,
+             std::string *Result) const override {
+    if (const auto *CS = Match.Nodes.getNodeAs<CompoundStmt>(Id)) {
+      *Result += getStatementsText(*CS, Match);
+      return Error::success();
+    }
+    if (const auto *S = Match.Nodes.getNodeAs<Stmt>(Id)) {
+      *Result += fixit::getText(*S, *Match.Context);
+      return Error::success();
+    }
+    return llvm::make_error<StringError>(errc::invalid_argument,
+                                         "Id not bound: " + Id);
+  }
 
-    private:
+  std::unique_ptr<StencilPartInterface> clone() const override {
+    return llvm::make_unique<StatementsOp>(*this);
+  }
+
+  bool isEqual(const StencilPartInterface &Other) const override {
+    if (const auto *OtherPtr = down_cast<StatementsOp>(&Other)) {
+      return Id == OtherPtr->Id;
       std::string Id;
     };
-
-    // Given a function and a reference to a node, yields the string that
-    // results from applying the function to the referenced node.
-    class NodeFunctionOp : public StencilPartInterface {
-    public:
-      NodeFunctionOp(stencil_generators::NodeFunction F, StringRef Id)
-          : StencilPartInterface(NodeFunctionOp::typeId()), F(std::move(F)),
-            Id(Id) {}
-
-      static const void *typeId() {
-        static bool b;
-        return &b;
-      }
-
-      Error eval(const MatchFinder::MatchResult &Match,
-                 std::string *Result) const override {
-        auto NodeOrErr = getNode(Match.Nodes, Id);
-        if (auto Err = NodeOrErr.takeError()) {
-          return Err;
-        }
-        *Result += F(*NodeOrErr, *Match.Context);
-        return Error::success();
-      }
-
-      std::unique_ptr<StencilPartInterface> clone() const override {
-        return llvm::make_unique<NodeFunctionOp>(*this);
-      }
-
-      bool isEqual(const StencilPartInterface &Other) const override {
-        return false;
-      }
-
-    private:
-      stencil_generators::NodeFunction F;
-      std::string Id;
-    };
-
-    // Given a function and a stencil part, yields the string that results from
-    // applying the function to the part's evaluation.
-    class StringFunctionOp : public StencilPartInterface {
-    public:
-      StringFunctionOp(stencil_generators::StringFunction F, StencilPart Part)
-          : StencilPartInterface(StringFunctionOp::typeId()), F(std::move(F)),
-            Part(std::move(Part)) {}
-
-      static const void *typeId() {
-        static bool b;
-        return &b;
-      }
-
-      Error eval(const MatchFinder::MatchResult &Match,
-                 std::string *Result) const override {
-        std::string PartResult;
-        if (auto Err = Part.eval(Match, &PartResult)) {
-          return Err;
-        }
-        *Result += F(PartResult);
-        return Error::success();
-      }
-
-      std::unique_ptr<StencilPartInterface> clone() const override {
-        return llvm::make_unique<StringFunctionOp>(*this);
-      }
-
-      bool isEqual(const StencilPartInterface &Other) const override {
-        return false;
-      }
-
-    private:
-      stencil_generators::StringFunction F;
-      StencilPart Part;
-    };
-  } // namespace
-
-  NodeId::NodeId() : NodeId(nextId()) {}
-
-  void Stencil::append(const NodeId &Id) {
-    Parts.emplace_back(llvm::make_unique<NodeRef>(Id.id()));
+    return false;
   }
 
-  void Stencil::append(StringRef Text) {
-    Parts.emplace_back(llvm::make_unique<RawText>(Text));
+private:
+  std::string Id;
+};
+
+// Given a function and a reference to a node, yields the string that
+// results from applying the function to the referenced node.
+class NodeFunctionOp : public StencilPartInterface {
+public:
+  NodeFunctionOp(stencil_generators::NodeFunction F, StringRef Id)
+      : StencilPartInterface(NodeFunctionOp::typeId()), F(std::move(F)),
+        Id(Id) {}
+
+  static const void *typeId() {
+    static bool b;
+    return &b;
   }
 
-  void Stencil::concat(Stencil OtherStencil) {
-    for (auto &Part : OtherStencil.Parts)
-      Parts.push_back(std::move(Part));
-    for (auto &AddedInclude : OtherStencil.AddedIncludes) {
-      AddedIncludes.push_back(std::move(AddedInclude));
+  Error eval(const MatchFinder::MatchResult &Match,
+             std::string *Result) const override {
+    auto NodeOrErr = getNode(Match.Nodes, Id);
+    if (auto Err = NodeOrErr.takeError()) {
+      return Err;
     }
-    for (auto &RemovedInclude : OtherStencil.RemovedIncludes) {
-      RemovedIncludes.push_back(std::move(RemovedInclude));
+    *Result += F(*NodeOrErr, *Match.Context);
+    return Error::success();
+  }
+
+  std::unique_ptr<StencilPartInterface> clone() const override {
+    return llvm::make_unique<NodeFunctionOp>(*this);
+  }
+
+  bool isEqual(const StencilPartInterface &Other) const override {
+    return false;
+  }
+
+private:
+  stencil_generators::NodeFunction F;
+  std::string Id;
+};
+
+// Given a function and a stencil part, yields the string that results from
+// applying the function to the part's evaluation.
+class StringFunctionOp : public StencilPartInterface {
+public:
+  StringFunctionOp(stencil_generators::StringFunction F, StencilPart Part)
+      : StencilPartInterface(StringFunctionOp::typeId()), F(std::move(F)),
+        Part(std::move(Part)) {}
+
+  static const void *typeId() {
+    static bool b;
+    return &b;
+  }
+
+  Error eval(const MatchFinder::MatchResult &Match,
+             std::string *Result) const override {
+    std::string PartResult;
+    if (auto Err = Part.eval(Match, &PartResult)) {
+      return Err;
     }
+    *Result += F(PartResult);
+    return Error::success();
   }
 
-  llvm::Expected<std::string>
-  Stencil::eval(const MatchFinder::MatchResult &Match) const {
-    std::string Result;
-    for (const auto &Part : Parts) {
-      if (auto Err = Part.eval(Match, &Result)) {
-        return std::move(Err);
-      }
-    }
-    return Result;
+  std::unique_ptr<StencilPartInterface> clone() const override {
+    return llvm::make_unique<StringFunctionOp>(*this);
   }
 
-  namespace stencil_generators {
-  StencilPart text(StringRef Text) {
-    return StencilPart(llvm::make_unique<RawText>(Text));
+  bool isEqual(const StencilPartInterface &Other) const override {
+    return false;
   }
 
-  StencilPart node(llvm::StringRef Id) {
-    return StencilPart(llvm::make_unique<NodeRef>(Id));
-  }
-  StencilPart node(const NodeId &Id) { return node(Id.id()); }
-
-  StencilPart member(StringRef Id, StringRef Member) {
-    return StencilPart(llvm::make_unique<MemberOp>(Id, text(Member)));
-  }
-  StencilPart member(const NodeId &ObjectId, StringRef Member) {
-    return member(ObjectId.id(), Member);
-  }
-
-  StencilPart member(StringRef Id, StencilPart Member) {
-    return StencilPart(llvm::make_unique<MemberOp>(Id, std::move(Member)));
-  }
-  StencilPart member(const NodeId &ObjectId, StencilPart Member) {
-    return member(ObjectId.id(), std::move(Member));
-  }
-
-  StencilPart asValue(StringRef Id) {
-    return StencilPart(llvm::make_unique<ExprOp>(ExprOp::Operator::kValue, Id));
-  }
-  StencilPart asValue(const NodeId &Id) { return asValue(Id.id()); }
-
-  StencilPart asAddress(StringRef Id) {
-    return StencilPart(
-        llvm::make_unique<ExprOp>(ExprOp::Operator::kAddress, Id));
-  }
-  StencilPart asAddress(const NodeId &Id) { return asAddress(Id.id()); }
-
-  StencilPart parens(StringRef Id) {
-    return StencilPart(
-        llvm::make_unique<ExprOp>(ExprOp::Operator::kParens, Id));
-  }
-  StencilPart parens(const NodeId &Id) { return parens(Id.id()); }
-
-  StencilPart name(StringRef DeclId) {
-    return StencilPart(llvm::make_unique<NameOp>(DeclId));
-  }
-  StencilPart name(const NodeId &DeclId) { return name(DeclId.id()); }
-
-  StencilPart apply(NodeFunction Fn, StringRef Id) {
-    return StencilPart(llvm::make_unique<NodeFunctionOp>(std::move(Fn), Id));
-  }
-  StencilPart apply(NodeFunction Fn, const NodeId &Id) {
-    return apply(std::move(Fn), Id.id());
-  }
-
-  StencilPart apply(StringFunction Fn, StencilPart Part) {
-    return StencilPart(
-        llvm::make_unique<StringFunctionOp>(std::move(Fn), std::move(Part)));
-  }
-  StencilPart apply(StringFunction Fn, llvm::StringRef Id) {
-    return apply(std::move(Fn), node(Id));
-  }
-  StencilPart apply(StringFunction Fn, const NodeId &Id) {
-    return apply(std::move(Fn), node(Id));
-  }
-
-  StencilPart args(StringRef CallId) {
-    return StencilPart(llvm::make_unique<ArgsOp>(CallId));
-  }
-  StencilPart args(const NodeId &CallId) { return args(CallId.id()); }
-
-  StencilPart dPrint(StringRef Id) {
-    return StencilPart(llvm::make_unique<DebugPrintNodeOp>(Id));
-  }
-  StencilPart dPrint(const NodeId &Id) { return dPrint(Id.id()); }
-
-  AddIncludeOp addInclude(StringRef Path) {
-    return AddIncludeOp{std::string(Path)};
-  }
-  RemoveIncludeOp removeInclude(StringRef Path) {
-    return RemoveIncludeOp{std::string(Path)};
-  }
-  } // namespace stencil_generators
-} // namespace tooling
+private:
+  stencil_generators::StringFunction F;
+  StencilPart Part;
+};
 } // namespace
+
+NodeId::NodeId() : NodeId(nextId()) {}
+
+void Stencil::append(const NodeId &Id) {
+  Parts.emplace_back(llvm::make_unique<NodeRef>(Id.id()));
+}
+
+void Stencil::append(StringRef Text) {
+  Parts.emplace_back(llvm::make_unique<RawText>(Text));
+}
+
+void Stencil::concat(Stencil OtherStencil) {
+  for (auto &Part : OtherStencil.Parts)
+    Parts.push_back(std::move(Part));
+  for (auto &AddedInclude : OtherStencil.AddedIncludes) {
+    AddedIncludes.push_back(std::move(AddedInclude));
+  }
+  for (auto &RemovedInclude : OtherStencil.RemovedIncludes) {
+    RemovedIncludes.push_back(std::move(RemovedInclude));
+  }
+}
+
+llvm::Expected<std::string>
+Stencil::eval(const MatchFinder::MatchResult &Match) const {
+  std::string Result;
+  for (const auto &Part : Parts) {
+    if (auto Err = Part.eval(Match, &Result)) {
+      return std::move(Err);
+    }
+  }
+  return Result;
+}
+
+namespace stencil_generators {
+StencilPart text(StringRef Text) {
+  return StencilPart(llvm::make_unique<RawText>(Text));
+}
+
+StencilPart node(llvm::StringRef Id) {
+  return StencilPart(llvm::make_unique<NodeRef>(Id));
+}
+StencilPart node(const NodeId &Id) { return node(Id.id()); }
+
+StencilPart member(StringRef Id, StringRef Member) {
+  return StencilPart(llvm::make_unique<MemberOp>(Id, text(Member)));
+}
+StencilPart member(const NodeId &ObjectId, StringRef Member) {
+  return member(ObjectId.id(), Member);
+}
+
+StencilPart member(StringRef Id, StencilPart Member) {
+  return StencilPart(llvm::make_unique<MemberOp>(Id, std::move(Member)));
+}
+StencilPart member(const NodeId &ObjectId, StencilPart Member) {
+  return member(ObjectId.id(), std::move(Member));
+}
+
+StencilPart asValue(StringRef Id) {
+  return StencilPart(llvm::make_unique<ExprOp>(ExprOp::Operator::kValue, Id));
+}
+StencilPart asValue(const NodeId &Id) { return asValue(Id.id()); }
+
+StencilPart asAddress(StringRef Id) {
+  return StencilPart(llvm::make_unique<ExprOp>(ExprOp::Operator::kAddress, Id));
+}
+StencilPart asAddress(const NodeId &Id) { return asAddress(Id.id()); }
+
+StencilPart parens(StringRef Id) {
+  return StencilPart(llvm::make_unique<ExprOp>(ExprOp::Operator::kParens, Id));
+}
+StencilPart parens(const NodeId &Id) { return parens(Id.id()); }
+
+StencilPart name(StringRef DeclId) {
+  return StencilPart(llvm::make_unique<NameOp>(DeclId));
+}
+StencilPart name(const NodeId &DeclId) { return name(DeclId.id()); }
+
+StencilPart apply(NodeFunction Fn, StringRef Id) {
+  return StencilPart(llvm::make_unique<NodeFunctionOp>(std::move(Fn), Id));
+}
+StencilPart apply(NodeFunction Fn, const NodeId &Id) {
+  return apply(std::move(Fn), Id.id());
+}
+
+StencilPart apply(StringFunction Fn, StencilPart Part) {
+  return StencilPart(
+      llvm::make_unique<StringFunctionOp>(std::move(Fn), std::move(Part)));
+}
+StencilPart apply(StringFunction Fn, llvm::StringRef Id) {
+  return apply(std::move(Fn), node(Id));
+}
+StencilPart apply(StringFunction Fn, const NodeId &Id) {
+  return apply(std::move(Fn), node(Id));
+}
+
+StencilPart args(StringRef CallId) {
+  return StencilPart(llvm::make_unique<ArgsOp>(CallId));
+}
+StencilPart args(const NodeId &CallId) { return args(CallId.id()); }
+
+StencilPart statements(llvm::StringRef StmtId) {
+  return StencilPart(llvm::make_unique<StatementsOp>(StmtId));
+}
+StencilPart statements(const NodeId &StmtId) { return statements(StmtId.id()); }
+
+StencilPart dPrint(StringRef Id) {
+  return StencilPart(llvm::make_unique<DebugPrintNodeOp>(Id));
+}
+StencilPart dPrint(const NodeId &Id) { return dPrint(Id.id()); }
+
+AddIncludeOp addInclude(StringRef Path) {
+  return AddIncludeOp{std::string(Path)};
+}
+RemoveIncludeOp removeInclude(StringRef Path) {
+  return RemoveIncludeOp{std::string(Path)};
+}
+} // namespace stencil_generators
+} // namespace tooling
+} // namespace clang
