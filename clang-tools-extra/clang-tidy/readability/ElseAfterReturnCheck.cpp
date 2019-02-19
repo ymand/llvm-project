@@ -18,9 +18,9 @@ namespace clang {
 namespace tidy {
 namespace readability {
 
-static tooling::RewriteRule RewriteElse(
-    ast_matchers::StatementMatcher InterruptsControlFlow,
-    StringRef ControlFlowInterruptor) {
+static tooling::RewriteRule
+RewriteElse(ast_matchers::StatementMatcher InterruptsControlFlow,
+            StringRef ControlFlowInterruptor) {
   using tooling::stencil_generators::statements;
   tooling::StmtId IfS("If"), CondS("C"), ThenS("T"), ElseS("E");
   return tooling::RewriteRule()

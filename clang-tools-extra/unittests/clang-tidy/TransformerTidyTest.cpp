@@ -36,8 +36,8 @@ tooling::RewriteRule invertIf() {
 }
 
 class IfInverterTidy : public TransformerTidy {
- public:
-  IfInverterTidy(StringRef Name, ClangTidyContext* Context)
+public:
+  IfInverterTidy(StringRef Name, ClangTidyContext *Context)
       : TransformerTidy(invertIf(), Name, Context) {}
 };
 
@@ -62,7 +62,7 @@ TEST(TransformerTidyTest, Basic) {
 
   EXPECT_EQ(Expected, test::runCheckOnCode<IfInverterTidy>(Input));
 }
-}  // namespace
-}  // namespace utils
-}  // namespace tidy
-}  // namespace clang
+} // namespace
+} // namespace utils
+} // namespace tidy
+} // namespace clang

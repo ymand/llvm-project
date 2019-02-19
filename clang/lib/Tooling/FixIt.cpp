@@ -102,7 +102,8 @@ std::string formatDereference(const ASTContext &Context, const Expr &ExprNode) {
   }
   StringRef Text = fixit::getText(ExprNode, Context);
 
-  if (Text.empty()) return std::string();
+  if (Text.empty())
+    return std::string();
   // Add leading '*'.
   if (needParensAfterUnaryOperator(ExprNode)) {
     return (llvm::Twine("*(") + Text + ")").str();
@@ -119,7 +120,8 @@ std::string formatAddressOf(const ASTContext &Context, const Expr &ExprNode) {
   }
   // Add leading '&'.
   const std::string Text = fixit::getText(ExprNode, Context);
-  if (Text.empty()) return std::string();
+  if (Text.empty())
+    return std::string();
   if (needParensAfterUnaryOperator(ExprNode)) {
     return (llvm::Twine("&(") + Text + ")").str();
   }
@@ -132,7 +134,8 @@ std::string formatDot(const ASTContext &Context, const Expr &ExprNode) {
       // Strip leading '*', add following '->'.
       const Expr *SubExpr = Op->getSubExpr()->IgnoreParenImpCasts();
       const std::string DerefText = fixit::getText(*SubExpr, Context);
-      if (DerefText.empty()) return std::string();
+      if (DerefText.empty())
+        return std::string();
       if (needParensBeforeDotOrArrow(*SubExpr)) {
         return (llvm::Twine("(") + DerefText + ")->").str();
       }
@@ -141,7 +144,8 @@ std::string formatDot(const ASTContext &Context, const Expr &ExprNode) {
   }
   // Add following '.'.
   const std::string Text = fixit::getText(ExprNode, Context);
-  if (Text.empty()) return std::string();
+  if (Text.empty())
+    return std::string();
   if (needParensBeforeDotOrArrow(ExprNode)) {
     return (llvm::Twine("(") + Text + ").").str();
   }
@@ -154,7 +158,8 @@ std::string formatArrow(const ASTContext &Context, const Expr &ExprNode) {
       // Strip leading '&', add following '.'.
       const Expr *SubExpr = Op->getSubExpr()->IgnoreParenImpCasts();
       const std::string DerefText = fixit::getText(*SubExpr, Context);
-      if (DerefText.empty()) return std::string();
+      if (DerefText.empty())
+        return std::string();
       if (needParensBeforeDotOrArrow(*SubExpr)) {
         return (llvm::Twine("(") + DerefText + ").").str();
       }
@@ -163,15 +168,17 @@ std::string formatArrow(const ASTContext &Context, const Expr &ExprNode) {
   }
   // Add following '->'.
   const std::string Text = fixit::getText(ExprNode, Context);
-  if (Text.empty()) return std::string();
+  if (Text.empty())
+    return std::string();
   if (needParensBeforeDotOrArrow(ExprNode)) {
     return (llvm::Twine("(") + Text + ")->").str();
   }
   return (llvm::Twine(Text) + "->").str();
 }
 
-SourceLocation findOpenParen(
-    const CallExpr &E, const ast_matchers::MatchFinder::MatchResult &Result) {
+SourceLocation
+findOpenParen(const CallExpr &E,
+              const ast_matchers::MatchFinder::MatchResult &Result) {
   SourceLocation EndLoc =
       E.getNumArgs() == 0 ? E.getRParenLoc() : E.getArg(0)->getBeginLoc();
   return findPreviousTokenKind(EndLoc, *Result.SourceManager,

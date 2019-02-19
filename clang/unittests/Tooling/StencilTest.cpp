@@ -283,9 +283,9 @@ TEST_F(StencilTest, MemberOpThis) {
       int foo() { return x; }
     };
   )cc";
-  auto StmtMatch = matchStmt(
-      Snippet, returnStmt(hasReturnValue(ignoringImplicit(
-                   memberExpr(hasObjectExpression(expr().bind("obj")))))));
+  auto StmtMatch =
+      matchStmt(Snippet, returnStmt(hasReturnValue(ignoringImplicit(memberExpr(
+                             hasObjectExpression(expr().bind("obj")))))));
   ASSERT_TRUE(StmtMatch);
   const Stencil Stencil = Stencil::cat(member("obj", "field"));
   EXPECT_THAT(toOptional(Stencil.eval(StmtMatch->Result)),
@@ -681,6 +681,6 @@ TEST(StencilEqualityTest, StringFunctionOp) {
   auto Rhs = Stencil::cat(apply(SimpleFn, "id0"));
   EXPECT_THAT(Lhs, Ne(Rhs));
 }
-}  // namespace
-}  // namespace tooling
-}  // namespace clang
+} // namespace
+} // namespace tooling
+} // namespace clang

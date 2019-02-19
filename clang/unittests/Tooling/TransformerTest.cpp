@@ -8,8 +8,8 @@
 
 #include "clang/Tooling/Refactoring/Transformer.h"
 
-#include "clang/Tooling/Refactoring/Stencil.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
+#include "clang/Tooling/Refactoring/Stencil.h"
 #include "clang/Tooling/Tooling.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -83,10 +83,10 @@ constexpr char KHeaderContents[] = R"cc(
   };
   }  // namespace proto
 )cc";
-}  // namespace
+} // namespace
 
-static clang::ast_matchers::internal::Matcher<clang::QualType> isOrPointsTo(
-    const DeclarationMatcher &TypeMatcher) {
+static clang::ast_matchers::internal::Matcher<clang::QualType>
+isOrPointsTo(const DeclarationMatcher &TypeMatcher) {
   return anyOf(hasDeclaration(TypeMatcher), pointsTo(TypeMatcher));
 }
 
@@ -117,7 +117,7 @@ void compareSnippets(llvm::StringRef Expected,
 
 // TODO(yitzhakm): consider separating this class into its own file(s).
 class ClangRefactoringTestBase : public testing::Test {
- protected:
+protected:
   void appendToHeader(llvm::StringRef S) { FileContents[0].second += S; }
 
   void addFile(llvm::StringRef Filename, llvm::StringRef Content) {
@@ -146,12 +146,12 @@ class ClangRefactoringTestBase : public testing::Test {
   clang::ast_matchers::MatchFinder MatchFinder;
   AtomicChanges Changes;
 
- private:
+private:
   FileContentMappings FileContents = {{"header.h", ""}};
 };
 
 class TransformerTest : public ClangRefactoringTestBase {
- protected:
+protected:
   TransformerTest() { appendToHeader(KHeaderContents); }
 
   Transformer::ChangeConsumer changeRecorder() {
@@ -200,12 +200,11 @@ RewriteRule ruleStrlenSize() {
   ExprId StringExpr;
   auto StringType = namedDecl(hasAnyName("::basic_string", "::string"));
   return makeRule(
-      callExpr(
-          callee(functionDecl(hasName("strlen"))),
-          hasArgument(0, cxxMemberCallExpr(
-                             on(bind(StringExpr,
-                                     expr(hasType(isOrPointsTo(StringType))))),
-                             callee(cxxMethodDecl(hasName("c_str")))))),
+      callExpr(callee(functionDecl(hasName("strlen"))),
+               hasArgument(0, cxxMemberCallExpr(
+                                  on(bind(StringExpr, expr(hasType(isOrPointsTo(
+                                                          StringType))))),
+                                  callee(cxxMethodDecl(hasName("c_str")))))),
       Stencil::cat(member(StringExpr, "size()")),
       "Use size() method directly on string.");
 }
@@ -807,7 +806,7 @@ std::string errString(const llvm::Optional<std::string> &O) {
 }
 
 class MaybeTransformTest : public ::testing::Test {
- protected:
+protected:
   // We need to initialize nodes_ here because Node has no default constructor.
   MaybeTransformTest() : Node(init()) {}
 
@@ -841,7 +840,8 @@ class MaybeTransformTest : public ::testing::Test {
 
 // A very simple matcher for llvm::Optional values.
 MATCHER_P(IsSomething, ValueMatcher, "") {
-  if (!arg) return false;
+  if (!arg)
+    return false;
   return ::testing::ExplainMatchResult(ValueMatcher, *arg, result_listener);
 }
 
@@ -890,5 +890,5 @@ TEST_F(MaybeTransformTest, FailureMultiMatch) {
       << "Expected rewrite to fail on too many matches: "
       << errString(*ResultOrErr);
 }
-}  // namespace tooling
-}  // namespace clang
+} // namespace tooling
+} // namespace clang
