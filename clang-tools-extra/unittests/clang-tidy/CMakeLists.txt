@@ -16,7 +16,8 @@ add_extra_unittest(ClangTidyTests
   ObjCModuleTest.cpp
   OverlappingReplacementsTest.cpp
   UsingInserterTest.cpp
-  ReadabilityModuleTest.cpp)
+  ReadabilityModuleTest.cpp
+  TransformerTidyTest.cpp)
 
 target_link_libraries(ClangTidyTests
   PRIVATE
@@ -35,4 +36,5 @@ target_link_libraries(ClangTidyTests
   clangTidyUtils
   clangTooling
   clangToolingCore
+  clangToolingRefactor
   )

@@ -4,9 +4,9 @@
 void f() {
   if (sizeof(int) > 4)
     return;
+  // CHECK-MESSAGES: [[@LINE-2]]:3: warning: do not use 'else' after 'return'
   else
     return;
-  // CHECK-MESSAGES: [[@LINE-2]]:3: warning: do not use 'else' after 'return'
 
   if constexpr (sizeof(int) > 4)
     return;

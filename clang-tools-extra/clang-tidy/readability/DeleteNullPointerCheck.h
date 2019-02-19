@@ -10,6 +10,7 @@
 #define LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_READABILITY_DELETE_NULL_POINTER_H
 
 #include "../ClangTidy.h"
+#include "../utils/TransformerTidy.h"
 
 namespace clang {
 namespace tidy {
@@ -20,12 +21,12 @@ namespace readability {
 ///
 /// For the user-facing documentation see:
 /// http://clang.llvm.org/extra/clang-tidy/checks/readability-delete-null-pointer.html
-class DeleteNullPointerCheck : public ClangTidyCheck {
+tooling::RewriteRule RewriteDeleteNullPointer();
+
+class DeleteNullPointerCheck : public utils::TransformerTidy {
 public:
   DeleteNullPointerCheck(StringRef Name, ClangTidyContext *Context)
-      : ClangTidyCheck(Name, Context) {}
-  void registerMatchers(ast_matchers::MatchFinder *Finder) override;
-  void check(const ast_matchers::MatchFinder::MatchResult &Result) override;
+      : TransformerTidy(RewriteDeleteNullPointer(), Name, Context) {}
 };
 
 } // namespace readability

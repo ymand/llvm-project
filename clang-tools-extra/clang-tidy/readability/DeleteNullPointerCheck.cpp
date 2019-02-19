@@ -10,6 +10,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Lex/Lexer.h"
+#include "clang/Tooling/Refactoring/Transformer.h"
 
 using namespace clang::ast_matchers;
 
@@ -17,16 +18,12 @@ namespace clang {
 namespace tidy {
 namespace readability {
 
-void DeleteNullPointerCheck::registerMatchers(MatchFinder *Finder) {
-  const auto DeleteExpr =
-      cxxDeleteExpr(has(castExpr(has(declRefExpr(
-                        to(decl(equalsBoundNode("deletedPointer"))))))))
-          .bind("deleteExpr");
+tooling::RewriteRule RewriteDeleteNullPointer() {
+  const auto DeleteExpr = cxxDeleteExpr(has(
+      castExpr(has(declRefExpr(to(decl(equalsBoundNode("deletedPointer"))))))));
 
-  const auto DeleteMemberExpr =
-      cxxDeleteExpr(has(castExpr(has(memberExpr(hasDeclaration(
-                        fieldDecl(equalsBoundNode("deletedMemberPointer"))))))))
-          .bind("deleteMemberExpr");
+  const auto DeleteMemberExpr = cxxDeleteExpr(has(castExpr(has(memberExpr(
+      hasDeclaration(fieldDecl(equalsBoundNode("deletedMemberPointer"))))))));
 
   const auto PointerExpr = ignoringImpCasts(anyOf(
       declRefExpr(to(decl().bind("deletedPointer"))),
@@ -38,39 +35,23 @@ void DeleteNullPointerCheck::registerMatchers(MatchFinder *Finder) {
       binaryOperator(hasEitherOperand(castExpr(hasCastKind(CK_NullToPointer))),
                      hasEitherOperand(PointerExpr));
 
-  Finder->addMatcher(
-      ifStmt(hasCondition(anyOf(PointerCondition, BinaryPointerCheckCondition)),
-             hasThen(anyOf(
-                 DeleteExpr, DeleteMemberExpr,
-                 compoundStmt(anyOf(has(DeleteExpr), has(DeleteMemberExpr)),
-                              statementCountIs(1))
-                     .bind("compound"))))
-          .bind("ifWithDelete"),
-      this);
-}
-
-void DeleteNullPointerCheck::check(const MatchFinder::MatchResult &Result) {
-  const auto *IfWithDelete = Result.Nodes.getNodeAs<IfStmt>("ifWithDelete");
-  const auto *Compound = Result.Nodes.getNodeAs<CompoundStmt>("compound");
-
-  auto Diag = diag(
-      IfWithDelete->getBeginLoc(),
-      "'if' statement is unnecessary; deleting null pointer has no effect");
-  if (IfWithDelete->getElse())
-    return;
-  // FIXME: generate fixit for this case.
-
-  Diag << FixItHint::CreateRemoval(CharSourceRange::getTokenRange(
-      IfWithDelete->getBeginLoc(),
-      Lexer::getLocForEndOfToken(IfWithDelete->getCond()->getEndLoc(), 0,
-                                 *Result.SourceManager,
-                                 Result.Context->getLangOpts())));
-  if (Compound) {
-    Diag << FixItHint::CreateRemoval(
-        CharSourceRange::getTokenRange(Compound->getLBracLoc()));
-    Diag << FixItHint::CreateRemoval(
-        CharSourceRange::getTokenRange(Compound->getRBracLoc()));
-  }
+  tooling::StmtId DelStmt;
+  using tooling::bind;
+  using tooling::stencil_generators::statements;
+  return tooling::RewriteRule()
+      .matching(ifStmt(
+          hasCondition(anyOf(PointerCondition, BinaryPointerCheckCondition)),
+          hasThen(bind(
+              DelStmt,
+              stmt(anyOf(DeleteExpr, DeleteMemberExpr,
+                         compoundStmt(statementCountIs(1),
+                                      has(stmt(anyOf(DeleteExpr,
+                                                     DeleteMemberExpr)))))))),
+          // FIXME: handle else case.
+          unless(hasElse(stmt()))))
+      .replaceWith(statements(DelStmt))
+      .explain(
+          "'if' statement is unnecessary; deleting null pointer has no effect");
 }
 
 } // namespace readability
