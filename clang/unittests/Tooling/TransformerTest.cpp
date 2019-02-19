@@ -105,7 +105,7 @@ static std::string format(llvm::StringRef Code) {
 
 void compareSnippets(llvm::StringRef Expected,
                      const llvm::Optional<std::string> &MaybeActual) {
-  ASSERT_TRUE(MaybeActual) << "Rewrite failed. Expecting: " << Expected.str();
+  ASSERT_TRUE(MaybeActual) << "Rewrite failed. Expecting: " << Expected;
   auto Actual = *MaybeActual;
   std::string HL = "#include \"header.h\"\n";
   auto I = Actual.find(HL);
@@ -381,7 +381,7 @@ RewriteRule ruleLogIf() {
                  hasOverloadedOperatorName("<<"), hasArgument(0, LogCall),
                  hasArgument(1, Msg.bind()))))),
              unless(hasElse(expr()))),
-      Stencil::cat("LOG_IF(", Level, ", ", parens(Condition), ") << ", Msg),
+      Stencil::cat("LOG_IF(", Level, ", ", parens(Condition), ") << ", Msg, ";"),
       "Use LOG_IF() when LOG() is only member of if statement.");
 }
 

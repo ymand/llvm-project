@@ -198,9 +198,9 @@ TEST_F(StencilTest, SingleStatement) {
                                              hasElse(stmt().bind("a3"))));
   ASSERT_TRUE(StmtMatch);
   auto Stencil =
-      Stencil::cat("if(!", id("a1"), ") ", id("a3"), "; else ", id("a2"));
+      Stencil::cat("if (!", id("a1"), ") ", id("a3"), " else ", id("a2"));
   EXPECT_THAT(toOptional(Stencil.eval(StmtMatch->Result)),
-              IsSomething(Eq("if(!true) return 0; else return 1")));
+              IsSomething(Eq("if (!true) return 0; else return 1;")));
   EXPECT_THAT(Stencil.addedIncludes(), testing::IsEmpty());
   EXPECT_THAT(Stencil.removedIncludes(), testing::IsEmpty());
 }
