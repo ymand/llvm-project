@@ -26,7 +26,7 @@ namespace tooling {
 namespace fixit {
 
 namespace internal {
-StringRef getText(SourceRange Range, const ASTContext &Context);
+StringRef getText(CharSourceRange Range, const ASTContext &Context);
 
 /// Returns the SourceRange of a SourceRange. This identity function is
 ///        used by the following template abstractions.
@@ -47,7 +47,31 @@ template <typename T> SourceRange getSourceRange(const T &Node) {
 // Returns a textual representation of \p Node.
 template <typename T>
 StringRef getText(const T &Node, const ASTContext &Context) {
-  return internal::getText(internal::getSourceRange(Node), Context);
+  return internal::getText(
+      CharSourceRange::getTokenRange(internal::getSourceRange(Node)), Context);
+}
+
+// For statements that aren't subexpressions, returns a \p SourceRange that
+// includes the statement's source and any trailing semi.
+CharSourceRange getSourceRangeSmart(const Stmt &S, ASTContext &Context);
+
+// For all clang::Stmts that are direct children of a compound statement,
+// extends the source to include any trailing semi. Returns a SourceRange
+// representing a token range.
+CharSourceRange getSourceRangeSmart(const ast_type_traits::DynTypedNode &Node,
+                                    ASTContext &Context);
+
+// Get the source text of the node, taking into account the node's type and
+// context. In contrast with getText(), this function selects a source range
+// "smartly", extracting text that a reader might intuitively associate with a
+// node.  Currently, only specialized for clang::Stmt, where it will include the
+// trailing semicolon if the node is an entire sub statement of a compound
+// statement.
+//
+// FIXME: choose a better name.
+template <typename T>
+StringRef getSourceSmart(const T &Node, ASTContext &Context) {
+  return internal::getText(getSourceRangeSmart(Node, Context), Context);
 }
 
 // Returns a FixItHint to remove \p Node.

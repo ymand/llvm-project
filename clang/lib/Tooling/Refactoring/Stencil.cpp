@@ -170,7 +170,7 @@ public:
     if (auto Err = NodeOrErr.takeError()) {
       return Err;
     }
-    *Result += fixit::getText(NodeOrErr.get(), *Match.Context);
+    *Result += fixit::getSourceSmart(NodeOrErr.get(), *Match.Context);
     return Error::success();
   }
 
@@ -422,7 +422,7 @@ public:
       return Error::success();
     }
     if (const auto *S = Match.Nodes.getNodeAs<Stmt>(Id)) {
-      *Result += fixit::getText(*S, *Match.Context);
+      *Result += fixit::getSourceSmart(*S, *Match.Context);
       return Error::success();
     }
     return llvm::make_error<StringError>(errc::invalid_argument,

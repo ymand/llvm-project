@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include "clang/Tooling/FixIt.h"
+#include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Lex/Lexer.h"
 
@@ -19,9 +20,8 @@ namespace tooling {
 namespace fixit {
 
 namespace internal {
-StringRef getText(SourceRange Range, const ASTContext &Context) {
-  return Lexer::getSourceText(CharSourceRange::getTokenRange(Range),
-                              Context.getSourceManager(),
+StringRef getText(CharSourceRange Range, const ASTContext &Context) {
+  return Lexer::getSourceText(Range, Context.getSourceManager(),
                               Context.getLangOpts());
 }
 } // end namespace internal
@@ -105,10 +105,10 @@ std::string formatDereference(const ASTContext &Context, const Expr &ExprNode) {
   if (const auto *Op = dyn_cast<UnaryOperator>(&ExprNode)) {
     if (Op->getOpcode() == UO_AddrOf) {
       // Strip leading '&'.
-      return fixit::getText(*Op->getSubExpr()->IgnoreParens(), Context);
+      return getText(*Op->getSubExpr()->IgnoreParens(), Context);
     }
   }
-  StringRef Text = fixit::getText(ExprNode, Context);
+  StringRef Text = getText(ExprNode, Context);
 
   if (Text.empty())
     return std::string();
@@ -123,11 +123,11 @@ std::string formatAddressOf(const ASTContext &Context, const Expr &ExprNode) {
   if (const auto *Op = dyn_cast<UnaryOperator>(&ExprNode)) {
     if (Op->getOpcode() == UO_Deref) {
       // Strip leading '*'.
-      return fixit::getText(*Op->getSubExpr()->IgnoreParens(), Context);
+      return getText(*Op->getSubExpr()->IgnoreParens(), Context);
     }
   }
   // Add leading '&'.
-  const std::string Text = fixit::getText(ExprNode, Context);
+  const std::string Text = getText(ExprNode, Context);
   if (Text.empty())
     return std::string();
   if (needsParensAfterUnaryOperator(ExprNode)) {
@@ -141,7 +141,7 @@ std::string formatDot(const ASTContext &Context, const Expr &ExprNode) {
     if (Op->getOpcode() == UO_Deref) {
       // Strip leading '*', add following '->'.
       const Expr *SubExpr = Op->getSubExpr()->IgnoreParenImpCasts();
-      const std::string DerefText = fixit::getText(*SubExpr, Context);
+      const std::string DerefText = getText(*SubExpr, Context);
       if (DerefText.empty())
         return std::string();
       if (needsParensBeforeDotOrArrow(*SubExpr)) {
@@ -151,7 +151,7 @@ std::string formatDot(const ASTContext &Context, const Expr &ExprNode) {
     }
   }
   // Add following '.'.
-  const std::string Text = fixit::getText(ExprNode, Context);
+  const std::string Text = getText(ExprNode, Context);
   if (Text.empty())
     return std::string();
   if (needsParensBeforeDotOrArrow(ExprNode)) {
@@ -165,7 +165,7 @@ std::string formatArrow(const ASTContext &Context, const Expr &ExprNode) {
     if (Op->getOpcode() == UO_AddrOf) {
       // Strip leading '&', add following '.'.
       const Expr *SubExpr = Op->getSubExpr()->IgnoreParenImpCasts();
-      const std::string DerefText = fixit::getText(*SubExpr, Context);
+      const std::string DerefText = getText(*SubExpr, Context);
       if (DerefText.empty())
         return std::string();
       if (needsParensBeforeDotOrArrow(*SubExpr)) {
@@ -175,7 +175,7 @@ std::string formatArrow(const ASTContext &Context, const Expr &ExprNode) {
     }
   }
   // Add following '->'.
-  const std::string Text = fixit::getText(ExprNode, Context);
+  const std::string Text = getText(ExprNode, Context);
   if (Text.empty())
     return std::string();
   if (needsParensBeforeDotOrArrow(ExprNode)) {
@@ -190,6 +190,66 @@ SourceLocation findOpenParen(const CallExpr &E, const SourceManager &SM,
       E.getNumArgs() == 0 ? E.getRParenLoc() : E.getArg(0)->getBeginLoc();
   return findPreviousTokenKind(EndLoc, SM, LangOpts, tok::TokenKind::l_paren);
 }
+
+
+// For a given range, returns the lexed token immediately after the range if
+// and only if it's a semicolon.
+static Optional<Token> getTrailingSemi(SourceLocation EndLoc,
+                                       const ASTContext &Context) {
+  if (Optional<Token> Next = Lexer::findNextToken(
+          EndLoc, Context.getSourceManager(), Context.getLangOpts())) {
+    return Next->is(clang::tok::TokenKind::semi) ? Next : None;
+  }
+  return None;
+}
+
+static const clang::Stmt *getStatementParent(const clang::Stmt &node,
+                                             ASTContext &context) {
+  using namespace ast_matchers;
+
+  auto is_or_has_node =
+      anyOf(equalsNode(&node), hasDescendant(equalsNode(&node)));
+  auto not_in_condition = unless(hasCondition(is_or_has_node));
+  // Note that SwitchCase nodes have the subsequent statement as substatement.
+  // For example, in "case 1: a(); b();", a() will be the child of the
+  // SwitchCase "case 1:".
+  // FIXME: Also handle other labels.
+  // missing: switchStmt() (although this is a weird corner case).
+  auto statement = stmt(hasParent(
+      stmt(anyOf(compoundStmt(), whileStmt(not_in_condition),
+                 doStmt(not_in_condition), switchCase(),
+                 ifStmt(not_in_condition),
+                 forStmt(not_in_condition, unless(hasIncrement(is_or_has_node)),
+                         unless(hasLoopInit(is_or_has_node)))))
+          .bind("parent")));
+  return selectFirst<const clang::Stmt>("parent",
+                                        match(statement, node, context));
+}
+
+// Is a real statement (not an expression inside another expression). That is,
+// not an expression with an expression parent.
+static bool isNonSubexprStatement(const Stmt &S, ASTContext &Context) {
+  return !isa<Expr>(S) || getStatementParent(S, Context) != nullptr;
+}
+
+CharSourceRange getSourceRangeSmart(const Stmt &S, ASTContext &Context) {
+  // Only exlude non-statement expressions.
+  if (isNonSubexprStatement(S, Context)) {
+    // TODO: exclude case where last token is a right brace?
+    if (auto Tok = getTrailingSemi(S.getEndLoc(), Context))
+      return CharSourceRange::getTokenRange(S.getBeginLoc(),
+                                            Tok->getLocation());
+  }
+  return CharSourceRange::getTokenRange(S.getSourceRange());
+}
+
+CharSourceRange getSourceRangeSmart(const ast_type_traits::DynTypedNode &Node,
+                                    ASTContext &Context) {
+  if (const auto *S = Node.get<Stmt>())
+    return getSourceRangeSmart(*S, Context);
+  return CharSourceRange::getTokenRange(Node.getSourceRange());
+}
+
 } // end namespace fixit
 } // end namespace tooling
 } // end namespace clang
