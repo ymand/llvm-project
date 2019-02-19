@@ -19,6 +19,7 @@
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/Tooling/FixIt.h"
 #include "clang/Tooling/Refactoring.h"
 #include "clang/Tooling/Refactoring/AtomicChange.h"
 #include "clang/Tooling/Refactoring/Stencil.h"
@@ -114,28 +115,33 @@ static Error verifyTarget(const clang::ast_type_traits::DynTypedNode &Node,
 }
 
 // Requires VerifyTarget(node, target_part) == success.
-static SourceRange getTarget(const clang::ast_type_traits::DynTypedNode &Node,
+static CharSourceRange getTarget(const clang::ast_type_traits::DynTypedNode &Node,
                              NodePart TargetPart, ASTContext &Context) {
+  SourceLocation TokenLoc;
   switch (TargetPart) {
   case NodePart::kNode:
-    return Node.getSourceRange();
+    return fixit::getSourceRangeSmart(Node, Context);
   case NodePart::kMember:
-    return SourceRange(Node.get<clang::MemberExpr>()->getMemberLoc());
+    TokenLoc = Node.get<clang::MemberExpr>()->getMemberLoc();
+    break;
   case NodePart::kName:
     if (const auto *D = Node.get<clang::NamedDecl>()) {
-      return SourceRange(D->getLocation());
+      TokenLoc = D->getLocation();
+      break;
     }
     if (const auto *E = Node.get<clang::DeclRefExpr>()) {
-      return SourceRange(E->getLocation());
+      TokenLoc = E->getLocation();
+      break;
     }
     if (const auto *I = Node.get<clang::CXXCtorInitializer>()) {
-      return SourceRange(I->getMemberLocation());
+      TokenLoc = I->getMemberLocation();
+      break;
     }
     // This should be unreachable if the target was already verified.
     llvm_unreachable("NodePart::kName applied to neither NamedDecl nor "
                      "CXXCtorInitializer");
   }
-  llvm_unreachable("Unexpected case in NodePart type.");
+  return CharSourceRange::getTokenRange(TokenLoc, TokenLoc);
 }
 
 namespace internal {
@@ -159,7 +165,7 @@ Expected<Transformation> transform(const MatchResult &Result,
           })) {
     return std::move(Err);
   }
-  SourceRange Target =
+  CharSourceRange Target =
       getTarget(It->second, Rule.targetPart(), *Result.Context);
   if (Target.isInvalid() ||
       isOriginMacroBody(*Result.SourceManager, Target.getBegin())) {
@@ -167,8 +173,7 @@ Expected<Transformation> transform(const MatchResult &Result,
   }
 
   if (auto ReplacementOrErr = Rule.replacement().eval(Result)) {
-    return Transformation{clang::CharSourceRange::getTokenRange(Target),
-                          std::move(*ReplacementOrErr)};
+    return Transformation{Target, std::move(*ReplacementOrErr)};
   } else {
     return ReplacementOrErr.takeError();
   }
