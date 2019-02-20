@@ -242,7 +242,7 @@ Error evalData(const NodeRefData &Data, const MatchFinder::MatchResult &Match,
   if (auto Err = NodeOrErr.takeError()) {
     return Err;
   }
-  *Result += fixit::getText(NodeOrErr.get(), *Match.Context);
+  *Result += fixit::getSourceSmart(NodeOrErr.get(), *Match.Context);
   return Error::success();
 }
 
@@ -334,8 +334,8 @@ Error evalData(const ArgsOpData &Data, const MatchFinder::MatchResult &Match,
   return Error::success();
 }
 
-Error evalData(const StatementsOpData &Data, const MatchFinder::MatchResult &Match,
-           std::string *Result) {
+Error evalData(const StatementsOpData &Data,
+               const MatchFinder::MatchResult &Match, std::string *Result) {
   if (const auto *CS = Match.Nodes.getNodeAs<CompoundStmt>(Data.Id)) {
     *Result += getStatementsText(*CS, Match);
     return Error::success();
