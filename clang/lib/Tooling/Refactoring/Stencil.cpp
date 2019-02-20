@@ -214,9 +214,6 @@ bool operator==(const StringFunctionOpData &A, const StringFunctionOpData &B) {
   return false;
 }
 
-
-// TODO: use a visitor pattern instead and define StencilPartImpl::eval to just
-// call the relevant visitor w/ the relevant data.
 Error evalData(const RawTextData &Data, const MatchFinder::MatchResult &,
            std::string *Result) {
   Result->append(Data.Text);
