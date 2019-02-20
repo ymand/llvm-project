@@ -83,160 +83,51 @@ using ::llvm::Expected;
 using ::llvm::StringError;
 
 // An arbitrary fragment of code within a stencil.
-class RawText : public StencilPartInterface {
-public:
-  explicit RawText(StringRef Text)
-      : StencilPartInterface(RawText::typeId()), Text(Text) {}
-
-  static const void *typeId() {
-    static bool b;
-    return &b;
-  }
-
-  Error eval(const MatchFinder::MatchResult &,
-             std::string *Result) const override {
-    Result->append(Text);
-    return Error::success();
-  }
-
-  std::unique_ptr<StencilPartInterface> clone() const override {
-    return llvm::make_unique<RawText>(*this);
-  }
-
-  bool isEqual(const StencilPartInterface &Other) const override {
-    if (const auto *OtherPtr = down_cast<RawText>(&Other)) {
-      return Text == OtherPtr->Text;
-    }
-    return false;
-  }
-
-private:
+struct RawTextData {
+  explicit RawTextData(std::string T) : Text(std::move(T)) {}
   std::string Text;
 };
 
+bool operator==(const RawTextData &A, const RawTextData &B) {
+  return A.Text == B.Text;
+}
+
 // A debugging operation to dump the AST for a particular (bound) AST node.
-class DebugPrintNodeOp : public StencilPartInterface {
-public:
-  explicit DebugPrintNodeOp(StringRef Id)
-      : StencilPartInterface(DebugPrintNodeOp::typeId()), Id(Id) {}
-
-  static const void *typeId() {
-    static bool b;
-    return &b;
-  }
-
-  Error eval(const MatchFinder::MatchResult &Match,
-             std::string *Result) const override {
-    std::string Output;
-    llvm::raw_string_ostream Os(Output);
-    auto NodeOrErr = getNode(Match.Nodes, Id);
-    if (auto Err = NodeOrErr.takeError()) {
-      return Err;
-    }
-    NodeOrErr->print(Os, PrintingPolicy(Match.Context->getLangOpts()));
-    *Result += Os.str();
-    return Error::success();
-  }
-
-  std::unique_ptr<StencilPartInterface> clone() const override {
-    return llvm::make_unique<DebugPrintNodeOp>(*this);
-  }
-
-  bool isEqual(const StencilPartInterface &Other) const override {
-    if (const auto *OtherPtr = down_cast<DebugPrintNodeOp>(&Other)) {
-      return Id == OtherPtr->Id;
-    }
-    return false;
-  }
-
-private:
+struct DebugPrintNodeOpData {
+  explicit DebugPrintNodeOpData(std::string S) : Id(std::move(S)) {}
   std::string Id;
 };
+
+bool operator==(const DebugPrintNodeOpData &A, const DebugPrintNodeOpData &B) {
+  return A.Id == B.Id;
+}
 
 // A reference to a particular (bound) AST node.
-class NodeRef : public StencilPartInterface {
-public:
-  explicit NodeRef(StringRef Id)
-      : StencilPartInterface(NodeRef::typeId()), Id(Id) {}
-
-  static const void *typeId() {
-    static bool b;
-    return &b;
-  }
-
-  Error eval(const MatchFinder::MatchResult &Match,
-             std::string *Result) const override {
-    auto NodeOrErr = getNode(Match.Nodes, Id);
-    if (auto Err = NodeOrErr.takeError()) {
-      return Err;
-    }
-    *Result += fixit::getSourceSmart(NodeOrErr.get(), *Match.Context);
-    return Error::success();
-  }
-
-  std::unique_ptr<StencilPartInterface> clone() const override {
-    return llvm::make_unique<NodeRef>(*this);
-  }
-
-  bool isEqual(const StencilPartInterface &Other) const override {
-    if (const auto *OtherPtr = down_cast<NodeRef>(&Other)) {
-      return Id == OtherPtr->Id;
-    }
-    return false;
-  }
-
-private:
+struct NodeRefData {
+  explicit NodeRefData(std::string S) : Id(std::move(S)) {}
   std::string Id;
 };
+
+bool operator==(const NodeRefData &A, const NodeRefData &B) {
+  return A.Id == B.Id;
+}
 
 // A stencil operation that, given a reference to an expression e and a Part
 // describing a member m, yields "e->m", when e is a pointer, "e2->m" when e =
 // "*e2" and "e.m" otherwise.
-class MemberOp : public StencilPartInterface {
-public:
-  MemberOp(StringRef ObjectId, StencilPart Member)
-      : StencilPartInterface(MemberOp::typeId()), ObjectId(ObjectId),
-        Member(std::move(Member)) {}
-
-  static const void *typeId() {
-    static bool b;
-    return &b;
-  }
-
-  Error eval(const MatchFinder::MatchResult &Match,
-             std::string *Result) const override {
-    const auto *E = Match.Nodes.getNodeAs<Expr>(ObjectId);
-    if (E == nullptr) {
-      return llvm::make_error<StringError>(errc::invalid_argument,
-                                           "Id not bound: " + ObjectId);
-    }
-    if (!E->isImplicitCXXThis()) {
-      *Result += E->getType()->isAnyPointerType()
-                     ? fixit::formatArrow(*Match.Context, *E)
-                     : fixit::formatDot(*Match.Context, *E);
-    }
-    return Member.eval(Match, Result);
-  }
-
-  std::unique_ptr<StencilPartInterface> clone() const override {
-    return llvm::make_unique<MemberOp>(*this);
-  }
-
-  bool isEqual(const StencilPartInterface &Other) const override {
-    if (const auto *OtherPtr = down_cast<MemberOp>(&Other)) {
-      return ObjectId == OtherPtr->ObjectId && Member == OtherPtr->Member;
-    }
-    return false;
-  }
-
-private:
+struct MemberOpData  {
+  MemberOpData(StringRef ObjectId, StencilPart Member)
+      : ObjectId(ObjectId), Member(std::move(Member)) {}
   std::string ObjectId;
   StencilPart Member;
 };
 
+bool operator==(const MemberOpData &A, const MemberOpData &B) {
+  return A.ObjectId == B.ObjectId && A.Member == B.Member;
+}
+
 // Operations all take a single reference to a Expr parameter, e.
-class ExprOp : public StencilPartInterface {
-public:
+struct ExprOpData {
   enum class Operator {
     // Yields "e2" when e = "&e2" (with '&' the builtin operator), "*e" when e
     // is a pointer and "e" otherwise.
@@ -250,39 +141,151 @@ public:
     kParens,
   };
 
-  ExprOp(Operator Op, StringRef Id)
-      : StencilPartInterface(ExprOp::typeId()), Op(Op), Id(Id) {}
+  ExprOpData(Operator Op, StringRef Id) : Op(Op), Id(Id) {}
 
-  static const void *typeId() {
-    static bool b;
-    return &b;
+  Operator Op;
+  std::string Id;
+};
+
+bool operator==(const ExprOpData &A, const ExprOpData &B) {
+  return A.Op == B.Op && A.Id == B.Id;
+}
+
+// Given a reference to a named declaration d (NamedDecl), yields
+// the name. "d" must have an identifier name (that is, constructors are
+// not valid arguments to the Name operation).
+struct NameOpData {
+  explicit NameOpData(StringRef Id)
+      : Id(Id) {}
+  std::string Id;
+};
+
+bool operator==(const NameOpData &A, const NameOpData &B) {
+  return A.Id == B.Id;
+}
+
+// Given a reference to a call expression (CallExpr), yields the
+// arguments as a comma separated list.
+struct ArgsOpData {
+  explicit ArgsOpData(StringRef Id) : Id(Id) {}
+  std::string Id;
+};
+
+bool operator==(const ArgsOpData &A, const ArgsOpData &B) {
+  return A.Id == B.Id;
+}
+
+// Given a reference to a statement, yields the contents between the braces,
+// if it is compound, or the statement and its trailing semicolon (if any)
+// otherwise.
+struct StatementsOpData {
+  explicit StatementsOpData(StringRef Id) : Id(Id) {}
+  std::string Id;
+};
+
+bool operator==(const StatementsOpData &A, const StatementsOpData &B) {
+  return A.Id == B.Id;
+}
+
+// Given a function and a reference to a node, yields the string that results
+// from applying the function to the referenced node.
+struct NodeFunctionOpData {
+  NodeFunctionOpData(stencil_generators::NodeFunction F, StringRef Id)
+      : F(std::move(F)), Id(Id) {}
+  stencil_generators::NodeFunction F;
+  std::string Id;
+};
+
+bool operator==(const NodeFunctionOpData &A, const NodeFunctionOpData &B) {
+  return false;
+}
+
+// Given a function and a stencil part, yields the string that results from
+// applying the function to the part's evaluation.
+struct StringFunctionOpData {
+  StringFunctionOpData(stencil_generators::StringFunction F, StencilPart Part)
+      :        F(std::move(F)),
+        Part(std::move(Part)) {}
+  stencil_generators::StringFunction F;
+  StencilPart Part;
+};
+
+bool operator==(const StringFunctionOpData &A, const StringFunctionOpData &B) {
+  return false;
+}
+
+
+// TODO: use a visitor pattern instead and define StencilPartImpl::eval to just
+// call the relevant visitor w/ the relevant data.
+Error eval(const RawTextData &Data, const MatchFinder::MatchResult &,
+           std::string *Result) {
+  Result->append(Data.Text);
+  return Error::success();
+}
+
+Error eval(const DebugPrintNodeOpData &Data,
+           const MatchFinder::MatchResult &Match, std::string *Result) {
+  std::string Output;
+  llvm::raw_string_ostream Os(Output);
+  auto NodeOrErr = getNode(Match.Nodes, Data.Id);
+  if (auto Err = NodeOrErr.takeError()) {
+    return Err;
   }
+  NodeOrErr->print(Os, PrintingPolicy(Match.Context->getLangOpts()));
+  *Result += Os.str();
+  return Error::success();
+}
 
-  Error eval(const MatchFinder::MatchResult &Match,
-             std::string *Result) const override {
-    const auto *Expression = Match.Nodes.getNodeAs<Expr>(Id);
-    if (Expression == nullptr) {
-      return llvm::make_error<StringError>(errc::invalid_argument,
-                                           "Id not bound: " + Id);
-    }
-    const auto &Context = *Match.Context;
-    switch (Op) {
-    case ExprOp::Operator::kValue:
+Error eval(const NodeRefData &Data, const MatchFinder::MatchResult &Match,
+           std::string *Result) {
+  auto NodeOrErr = getNode(Match.Nodes, Data.Id);
+  if (auto Err = NodeOrErr.takeError()) {
+    return Err;
+  }
+  *Result += fixit::getText(NodeOrErr.get(), *Match.Context);
+  return Error::success();
+}
+
+Error eval(const MemberOpData &Data, const MatchFinder::MatchResult &Match,
+           std::string *Result) {
+  const auto *E = Match.Nodes.getNodeAs<Expr>(Data.ObjectId);
+  if (E == nullptr) {
+    return llvm::make_error<StringError>(errc::invalid_argument,
+                                         "Id not bound: " + Data.ObjectId);
+  }
+  if (!E->isImplicitCXXThis()) {
+    *Result += E->getType()->isAnyPointerType()
+                   ? formatArrow(*Match.Context, *E)
+                   : formatDot(*Match.Context, *E);
+  }
+  return Data.Member.eval(Match, Result);
+}
+
+Error eval(const ExprOpData &Data, const MatchFinder::MatchResult &Match,
+           std::string *Result) {
+  const auto *Expression = Match.Nodes.getNodeAs<Expr>(Data.Id);
+  if (Expression == nullptr) {
+    return llvm::make_error<StringError>(errc::invalid_argument,
+                                         "Id not bound: " + Data.Id);
+  }
+  const auto &Context = *Match.Context;
+  switch (Data.Op) {
+    case ExprOpData::Operator::kValue:
       if (Expression->getType()->isAnyPointerType()) {
-        *Result += fixit::formatDereference(Context, *Expression);
+        *Result += formatDereference(Context, *Expression);
       } else {
         *Result += fixit::getText(*Expression, Context);
       }
       break;
-    case ExprOp::Operator::kAddress:
+    case ExprOpData::Operator::kAddress:
       if (Expression->getType()->isAnyPointerType()) {
         *Result += fixit::getText(*Expression, Context);
       } else {
-        *Result += fixit::formatAddressOf(Context, *Expression);
+        *Result += formatAddressOf(Context, *Expression);
       }
       break;
-    case ExprOp::Operator::kParens:
-      if (fixit::needsParens(*Expression)) {
+    case ExprOpData::Operator::kParens:
+      if (needsParens(*Expression)) {
         *Result += "(";
         *Result += fixit::getText(*Expression, Context);
         *Result += ")";
@@ -290,232 +293,129 @@ public:
         *Result += fixit::getText(*Expression, Context);
       }
       break;
+  }
+  return Error::success();
+}
+
+Error eval(const NameOpData &Data, const MatchFinder::MatchResult &Match,
+           std::string *Result) {
+  const NamedDecl *Decl;
+  if (const auto *Init = Match.Nodes.getNodeAs<CXXCtorInitializer>(Data.Id)) {
+    Decl = Init->getMember();
+    if (Decl == nullptr) {
+      return llvm::make_error<StringError>(
+          errc::invalid_argument, "non-member initializer: " + Data.Id);
     }
-    return Error::success();
-  }
-
-  std::unique_ptr<StencilPartInterface> clone() const override {
-    return llvm::make_unique<ExprOp>(*this);
-  }
-
-  bool isEqual(const StencilPartInterface &Other) const override {
-    if (const auto *OtherPtr = down_cast<ExprOp>(&Other)) {
-      return Op == OtherPtr->Op && Id == OtherPtr->Id;
+  } else {
+    Decl = Match.Nodes.getNodeAs<NamedDecl>(Data.Id);
+    if (Decl == nullptr) {
+      return llvm::make_error<StringError>(
+          errc::invalid_argument,
+          "Id not bound or wrong type for Name op: " + Data.Id);
     }
-    return false;
   }
-
-private:
-  Operator Op;
-  std::string Id;
-};
-
-// Given a reference to a named declaration d (NamedDecl), yields
-// the name. "d" must have an identifier name (that is, constructors are
-// not valid arguments to the Name operation).
-class NameOp : public StencilPartInterface {
-public:
-  explicit NameOp(StringRef Id)
-      : StencilPartInterface(NameOp::typeId()), Id(Id) {}
-
-  static const void *typeId() {
-    static bool b;
-    return &b;
-  }
-
-  Error eval(const MatchFinder::MatchResult &Match,
-             std::string *Result) const override {
-    const NamedDecl *Decl;
-    if (const auto *Init = Match.Nodes.getNodeAs<CXXCtorInitializer>(Id)) {
-      Decl = Init->getMember();
-      if (Decl == nullptr) {
-        return llvm::make_error<StringError>(errc::invalid_argument,
-                                             "non-member initializer: " + Id);
-      }
-    } else {
-      Decl = Match.Nodes.getNodeAs<NamedDecl>(Id);
-      if (Decl == nullptr) {
-        return llvm::make_error<StringError>(
-            errc::invalid_argument,
-            "Id not bound or wrong type for Name op: " + Id);
-      }
-    }
-    // getIdentifier() guards the validity of getName().
-    if (Decl->getIdentifier() == nullptr) {
-      return llvm::make_error<StringError>(errc::invalid_argument,
-                                           "Decl is not identifier: " + Id);
-    }
-    *Result += Decl->getName();
-    return Error::success();
-  }
-
-  std::unique_ptr<StencilPartInterface> clone() const override {
-    return llvm::make_unique<NameOp>(*this);
-  }
-
-  bool isEqual(const StencilPartInterface &Other) const override {
-    if (const auto *OtherPtr = down_cast<NameOp>(&Other)) {
-      return Id == OtherPtr->Id;
-    }
-    return false;
-  }
-
-private:
-  std::string Id;
-};
-
-// Given a reference to a call expression (CallExpr), yields the
-// arguments as a comma separated list.
-class ArgsOp : public StencilPartInterface {
-public:
-  explicit ArgsOp(StringRef Id)
-      : StencilPartInterface(ArgsOp::typeId()), Id(Id) {}
-
-  static const void *typeId() {
-    static bool b;
-    return &b;
-  }
-
-  Error eval(const MatchFinder::MatchResult &Match,
-             std::string *Result) const override {
-    const auto *CE = Match.Nodes.getNodeAs<CallExpr>(Id);
-    if (CE == nullptr) {
-      return llvm::make_error<StringError>(errc::invalid_argument,
-                                           "Id not bound: " + Id);
-    }
-    *Result += getArgumentsText(*CE, Match);
-    return Error::success();
-  }
-
-  std::unique_ptr<StencilPartInterface> clone() const override {
-    return llvm::make_unique<ArgsOp>(*this);
-  }
-
-  bool isEqual(const StencilPartInterface &Other) const override {
-    if (const auto *OtherPtr = down_cast<ArgsOp>(&Other)) {
-      return Id == OtherPtr->Id;
-      std::string Id;
-    };
-    return false;
-  }
-
-private:
-  std::string Id;
-};
-
-// Given a reference to a statement, yields the contents between the braces,
-// if it is compound, or the statement and its trailing semicolon (if any)
-// otherwise.
-class StatementsOp : public StencilPartInterface {
-public:
-  explicit StatementsOp(StringRef Id)
-      : StencilPartInterface(ArgsOp::typeId()), Id(Id) {}
-
-  static const void *typeId() {
-    static bool b;
-    return &b;
-  }
-  Error eval(const MatchFinder::MatchResult &Match,
-             std::string *Result) const override {
-    if (const auto *CS = Match.Nodes.getNodeAs<CompoundStmt>(Id)) {
-      *Result += getStatementsText(*CS, Match);
-      return Error::success();
-    }
-    if (const auto *S = Match.Nodes.getNodeAs<Stmt>(Id)) {
-      *Result += fixit::getSourceSmart(*S, *Match.Context);
-      return Error::success();
-    }
+  // getIdentifier() guards the validity of getName().
+  if (Decl->getIdentifier() == nullptr) {
     return llvm::make_error<StringError>(errc::invalid_argument,
-                                         "Id not bound: " + Id);
+                                         "Decl is not identifier: " + Data.Id);
   }
+  *Result += Decl->getName();
+  return Error::success();
+}
 
-  std::unique_ptr<StencilPartInterface> clone() const override {
-    return llvm::make_unique<StatementsOp>(*this);
+Error eval(const ArgsOpData &Data, const MatchFinder::MatchResult &Match,
+           std::string *Result) {
+  const auto *CE = Match.Nodes.getNodeAs<CallExpr>(Data.Id);
+  if (CE == nullptr) {
+    return llvm::make_error<StringError>(errc::invalid_argument,
+                                         "Id not bound: " + Data.Id);
   }
+  *Result += getArgumentsText(*CE, Match);
+  return Error::success();
+}
 
-  bool isEqual(const StencilPartInterface &Other) const override {
-    if (const auto *OtherPtr = down_cast<StatementsOp>(&Other)) {
-      return Id == OtherPtr->Id;
-      std::string Id;
-    };
-    return false;
+Error eval(const StatementsOpData &Data, const MatchFinder::MatchResult &Match,
+           std::string *Result) {
+  if (const auto *CS = Match.Nodes.getNodeAs<CompoundStmt>(Data.Id)) {
+    *Result += getStatementsText(*CS, Match);
+    return Error::success();
   }
+  if (const auto *S = Match.Nodes.getNodeAs<Stmt>(Data.Id)) {
+    *Result += fixit::getSourceSmart(*S, *Match.Context);
+    return Error::success();
+  }
+  return llvm::make_error<StringError>(errc::invalid_argument,
+                                       "Id not bound: " + Data.Id);
+}
 
-private:
-  std::string Id;
-};
+Error eval(const NodeFunctionOpData &Data,
+           const MatchFinder::MatchResult &Match, std::string *Result) {
+  auto NodeOrErr = getNode(Match.Nodes, Data.Id);
+  if (auto Err = NodeOrErr.takeError()) {
+    return Err;
+  }
+  *Result += Data.F(*NodeOrErr, *Match.Context);
+  return Error::success();
+}
 
-// Given a function and a reference to a node, yields the string that
-// results from applying the function to the referenced node.
-class NodeFunctionOp : public StencilPartInterface {
-public:
-  NodeFunctionOp(stencil_generators::NodeFunction F, StringRef Id)
-      : StencilPartInterface(NodeFunctionOp::typeId()), F(std::move(F)),
-        Id(Id) {}
+Error eval(const StringFunctionOpData &Data,
+           const MatchFinder::MatchResult &Match, std::string *Result) {
+  std::string PartResult;
+  if (auto Err = Data.Part.eval(Match, &PartResult)) {
+    return Err;
+  }
+  *Result += Data.F(PartResult);
+  return Error::success();
+}
 
-  static const void *typeId() {
+template <typename T>
+class StencilPartImpl : public StencilPartInterface {
+ public:
+  template <typename... Ps>
+  explicit StencilPartImpl(Ps &&... Args)
+      : StencilPartInterface(StencilPartImpl::typeId()),
+        Data(std::forward<Ps>(Args)...) {}
+
+  StencilPartImpl(const StencilPartImpl &) = default;
+  StencilPartImpl(StencilPartImpl &&) = default;
+  StencilPartImpl &operator=(const StencilPartImpl &) = default;
+  StencilPartImpl &operator=(StencilPartImpl &&) = default;
+
+  static const void* typeId() {
     static bool b;
     return &b;
   }
 
   Error eval(const MatchFinder::MatchResult &Match,
              std::string *Result) const override {
-    auto NodeOrErr = getNode(Match.Nodes, Id);
-    if (auto Err = NodeOrErr.takeError()) {
-      return Err;
-    }
-    *Result += F(*NodeOrErr, *Match.Context);
-    return Error::success();
+    return eval(Data, Match, Result);
   }
 
   std::unique_ptr<StencilPartInterface> clone() const override {
-    return llvm::make_unique<NodeFunctionOp>(*this);
+    return llvm::make_unique<StencilPartImpl>(*this);
   }
 
   bool isEqual(const StencilPartInterface &Other) const override {
-    return false;
-  }
-
-private:
-  stencil_generators::NodeFunction F;
-  std::string Id;
-};
-
-// Given a function and a stencil part, yields the string that results from
-// applying the function to the part's evaluation.
-class StringFunctionOp : public StencilPartInterface {
-public:
-  StringFunctionOp(stencil_generators::StringFunction F, StencilPart Part)
-      : StencilPartInterface(StringFunctionOp::typeId()), F(std::move(F)),
-        Part(std::move(Part)) {}
-
-  static const void *typeId() {
-    static bool b;
-    return &b;
-  }
-
-  Error eval(const MatchFinder::MatchResult &Match,
-             std::string *Result) const override {
-    std::string PartResult;
-    if (auto Err = Part.eval(Match, &PartResult)) {
-      return Err;
+    if (const auto *OtherPtr = down_cast<StencilPartImpl>(&Other)) {
+      return Data == OtherPtr->Data;
     }
-    *Result += F(PartResult);
-    return Error::success();
-  }
-
-  std::unique_ptr<StencilPartInterface> clone() const override {
-    return llvm::make_unique<StringFunctionOp>(*this);
-  }
-
-  bool isEqual(const StencilPartInterface &Other) const override {
     return false;
   }
 
-private:
-  stencil_generators::StringFunction F;
-  StencilPart Part;
+ private:
+  T Data;
 };
+
+using RawText = StencilPartImpl<RawTextData>;
+using DebugPrintNodeOp = StencilPartImpl<DebugPrintNodeOpData>;
+using NodeRef = StencilPartImpl<NodeRefData>;
+using MemberOp = StencilPartImpl<MemberOpData>;
+using ExprOp = StencilPartImpl<ExprOpData>;
+using NameOp = StencilPartImpl<NameOpData>;
+using ArgsOp = StencilPartImpl<ArgsOpData>;
+using StatementsOp = StencilPartImpl<StatementsOpData>;
+using NodeFunctionOp = StencilPartImpl<NodeFunctionOpData>;
+using StringFunctionOp = StencilPartImpl<StringFunctionOpData>;
 } // namespace
 
 NodeId::NodeId() : NodeId(nextId()) {}
