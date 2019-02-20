@@ -217,13 +217,13 @@ bool operator==(const StringFunctionOpData &A, const StringFunctionOpData &B) {
 
 // TODO: use a visitor pattern instead and define StencilPartImpl::eval to just
 // call the relevant visitor w/ the relevant data.
-Error eval(const RawTextData &Data, const MatchFinder::MatchResult &,
+Error evalData(const RawTextData &Data, const MatchFinder::MatchResult &,
            std::string *Result) {
   Result->append(Data.Text);
   return Error::success();
 }
 
-Error eval(const DebugPrintNodeOpData &Data,
+Error evalData(const DebugPrintNodeOpData &Data,
            const MatchFinder::MatchResult &Match, std::string *Result) {
   std::string Output;
   llvm::raw_string_ostream Os(Output);
@@ -236,7 +236,7 @@ Error eval(const DebugPrintNodeOpData &Data,
   return Error::success();
 }
 
-Error eval(const NodeRefData &Data, const MatchFinder::MatchResult &Match,
+Error evalData(const NodeRefData &Data, const MatchFinder::MatchResult &Match,
            std::string *Result) {
   auto NodeOrErr = getNode(Match.Nodes, Data.Id);
   if (auto Err = NodeOrErr.takeError()) {
@@ -246,7 +246,7 @@ Error eval(const NodeRefData &Data, const MatchFinder::MatchResult &Match,
   return Error::success();
 }
 
-Error eval(const MemberOpData &Data, const MatchFinder::MatchResult &Match,
+Error evalData(const MemberOpData &Data, const MatchFinder::MatchResult &Match,
            std::string *Result) {
   const auto *E = Match.Nodes.getNodeAs<Expr>(Data.ObjectId);
   if (E == nullptr) {
@@ -255,13 +255,13 @@ Error eval(const MemberOpData &Data, const MatchFinder::MatchResult &Match,
   }
   if (!E->isImplicitCXXThis()) {
     *Result += E->getType()->isAnyPointerType()
-                   ? formatArrow(*Match.Context, *E)
-                   : formatDot(*Match.Context, *E);
+                   ? fixit::formatArrow(*Match.Context, *E)
+                   : fixit::formatDot(*Match.Context, *E);
   }
   return Data.Member.eval(Match, Result);
 }
 
-Error eval(const ExprOpData &Data, const MatchFinder::MatchResult &Match,
+Error evalData(const ExprOpData &Data, const MatchFinder::MatchResult &Match,
            std::string *Result) {
   const auto *Expression = Match.Nodes.getNodeAs<Expr>(Data.Id);
   if (Expression == nullptr) {
@@ -272,7 +272,7 @@ Error eval(const ExprOpData &Data, const MatchFinder::MatchResult &Match,
   switch (Data.Op) {
     case ExprOpData::Operator::kValue:
       if (Expression->getType()->isAnyPointerType()) {
-        *Result += formatDereference(Context, *Expression);
+        *Result += fixit::formatDereference(Context, *Expression);
       } else {
         *Result += fixit::getText(*Expression, Context);
       }
@@ -281,11 +281,11 @@ Error eval(const ExprOpData &Data, const MatchFinder::MatchResult &Match,
       if (Expression->getType()->isAnyPointerType()) {
         *Result += fixit::getText(*Expression, Context);
       } else {
-        *Result += formatAddressOf(Context, *Expression);
+        *Result += fixit::formatAddressOf(Context, *Expression);
       }
       break;
     case ExprOpData::Operator::kParens:
-      if (needsParens(*Expression)) {
+      if (fixit::needsParens(*Expression)) {
         *Result += "(";
         *Result += fixit::getText(*Expression, Context);
         *Result += ")";
@@ -297,7 +297,7 @@ Error eval(const ExprOpData &Data, const MatchFinder::MatchResult &Match,
   return Error::success();
 }
 
-Error eval(const NameOpData &Data, const MatchFinder::MatchResult &Match,
+Error evalData(const NameOpData &Data, const MatchFinder::MatchResult &Match,
            std::string *Result) {
   const NamedDecl *Decl;
   if (const auto *Init = Match.Nodes.getNodeAs<CXXCtorInitializer>(Data.Id)) {
@@ -323,7 +323,7 @@ Error eval(const NameOpData &Data, const MatchFinder::MatchResult &Match,
   return Error::success();
 }
 
-Error eval(const ArgsOpData &Data, const MatchFinder::MatchResult &Match,
+Error evalData(const ArgsOpData &Data, const MatchFinder::MatchResult &Match,
            std::string *Result) {
   const auto *CE = Match.Nodes.getNodeAs<CallExpr>(Data.Id);
   if (CE == nullptr) {
@@ -334,7 +334,7 @@ Error eval(const ArgsOpData &Data, const MatchFinder::MatchResult &Match,
   return Error::success();
 }
 
-Error eval(const StatementsOpData &Data, const MatchFinder::MatchResult &Match,
+Error evalData(const StatementsOpData &Data, const MatchFinder::MatchResult &Match,
            std::string *Result) {
   if (const auto *CS = Match.Nodes.getNodeAs<CompoundStmt>(Data.Id)) {
     *Result += getStatementsText(*CS, Match);
@@ -348,7 +348,7 @@ Error eval(const StatementsOpData &Data, const MatchFinder::MatchResult &Match,
                                        "Id not bound: " + Data.Id);
 }
 
-Error eval(const NodeFunctionOpData &Data,
+Error evalData(const NodeFunctionOpData &Data,
            const MatchFinder::MatchResult &Match, std::string *Result) {
   auto NodeOrErr = getNode(Match.Nodes, Data.Id);
   if (auto Err = NodeOrErr.takeError()) {
@@ -358,7 +358,7 @@ Error eval(const NodeFunctionOpData &Data,
   return Error::success();
 }
 
-Error eval(const StringFunctionOpData &Data,
+Error evalData(const StringFunctionOpData &Data,
            const MatchFinder::MatchResult &Match, std::string *Result) {
   std::string PartResult;
   if (auto Err = Data.Part.eval(Match, &PartResult)) {
@@ -388,7 +388,7 @@ class StencilPartImpl : public StencilPartInterface {
 
   Error eval(const MatchFinder::MatchResult &Match,
              std::string *Result) const override {
-    return eval(Data, Match, Result);
+    return evalData(Data, Match, Result);
   }
 
   std::unique_ptr<StencilPartInterface> clone() const override {
@@ -475,17 +475,20 @@ StencilPart member(const NodeId &ObjectId, StencilPart Member) {
 }
 
 StencilPart asValue(StringRef Id) {
-  return StencilPart(llvm::make_unique<ExprOp>(ExprOp::Operator::kValue, Id));
+  return StencilPart(
+      llvm::make_unique<ExprOp>(ExprOpData::Operator::kValue, Id));
 }
 StencilPart asValue(const NodeId &Id) { return asValue(Id.id()); }
 
 StencilPart asAddress(StringRef Id) {
-  return StencilPart(llvm::make_unique<ExprOp>(ExprOp::Operator::kAddress, Id));
+  return StencilPart(
+      llvm::make_unique<ExprOp>(ExprOpData::Operator::kAddress, Id));
 }
 StencilPart asAddress(const NodeId &Id) { return asAddress(Id.id()); }
 
 StencilPart parens(StringRef Id) {
-  return StencilPart(llvm::make_unique<ExprOp>(ExprOp::Operator::kParens, Id));
+  return StencilPart(
+      llvm::make_unique<ExprOp>(ExprOpData::Operator::kParens, Id));
 }
 StencilPart parens(const NodeId &Id) { return parens(Id.id()); }
 
