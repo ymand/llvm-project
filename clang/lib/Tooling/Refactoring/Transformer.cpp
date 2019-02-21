@@ -210,11 +210,91 @@ RewriteRule makeRule(StatementMatcher Matcher, Stencil Replacement,
       .explain(std::move(Explanation));
 }
 
+///////////////
+
+// Binds each rule's matcher to a unique (and deterministic) tag based on
+// `TagBase`.
+static std::vector<DynTypedMatcher>
+taggedMatchers(StringRef TagBase, const std::vector<RewriteRule> &Rules) {
+  std::vector<DynTypedMatcher> Matchers;
+  Matchers.reserve(Rules.size());
+  size_t count = 0;
+  for (const auto &R : Rules) {
+    std::string Tag = (TagBase + Twine(count)).str();
+    ++count;
+    auto M = R.matcher().tryBind(Tag);
+    assert(M && "RewriteRule matchers should be bindable.");
+    Matchers.push_back(*std::move(M));
+  }
+  return Matchers;
+}
+
+static bool isHigher(ast_type_traits::ASTNodeKind A,
+                   ast_type_traits::ASTNodeKind B) {
+  static auto QualKind =
+      ast_type_traits::ASTNodeKind::getFromNodeKind<QualType>();
+  static auto TypeKind = ast_type_traits::ASTNodeKind::getFromNodeKind<Type>();
+  /// Mimic the implicit conversions of Matcher<>.
+  /// - From Matcher<Type> to Matcher<QualType>
+  /// - From Matcher<Base> to Matcher<Derived>
+  return (A.isSame(TypeKind) && B.isSame(QualKind)) || A.isBaseOf(B);
+}
+
+// Try to find a common kind to which all of the rule's matchers can be
+// converted.
+static ast_type_traits::ASTNodeKind
+findCommonKind(const std::vector<RewriteRule> &Rules) {
+  assert(!Rules.empty());
+  ast_type_traits::ASTNodeKind Join = Rules[0].matcher().getSupportedKind();
+  // Find a (least) Kind K, for which M.canConvertTo(K) holds for all matchers
+  // M in {Rule.matcher() | Rule in Rules}.
+  for (const auto &R : Rules) {
+    auto K = R.matcher().getSupportedKind();
+    if (isHigher(Join, K)) {
+      Join = K;
+      continue;
+    }
+    if (K.isSame(Join) || isHigher(K, Join))
+      // Join is already the lowest.
+      continue;
+    // K and Join are unrelated -- there is no least common kind.
+    return ast_type_traits::ASTNodeKind();
+  }
+  return Join;
+}
+
+llvm::Optional<RewriteRuleSet>
+RewriteRuleSet::constructForOp(DynTypedMatcher::VariadicOperator Op,
+                               std::vector<RewriteRule> Rules) {
+  auto CommonKind = findCommonKind(Rules);
+  if (CommonKind.isNone())
+    return llvm::None;
+  // Explicitly bind `M` to ensure we use `Rules` before it is moved.
+  auto M = DynTypedMatcher::constructVariadic(Op, CommonKind,
+                                              taggedMatchers("Tag", Rules));
+  return RewriteRuleSet(std::move(M), std::move(Rules));
+}
+
+const RewriteRule &RewriteRuleSet::findSelectedRule(
+    const ast_matchers::MatchFinder::MatchResult &Result) const {
+  if (Rules.size() == 1) return Rules[0];
+
+  auto &NodesMap = Result.Nodes.getMap();
+  for (size_t i = 0, N = Rules.size(); i < N; ++i) {
+    std::string Tag = ("Tag" + Twine(i)).str();
+    if (NodesMap.find(Tag) != NodesMap.end())
+      return Rules[i];
+  }
+  llvm_unreachable("No tag found for rule set.");
+}
+//////////////
+
 void Transformer::registerMatchers(MatchFinder *MatchFinder) {
-  MatchFinder->addDynamicMatcher(Rule.matcher(), this);
+  MatchFinder->addDynamicMatcher(Rules.matcher(), this);
 }
 
 void Transformer::run(const MatchResult &Result) {
+  const auto& Rule = Rules.findSelectedRule(Result);
   auto ChangeOrErr = internal::transform(Result, Rule);
   if (auto Err = ChangeOrErr.takeError()) {
     llvm::errs() << "Rewrite failed: " << llvm::toString(std::move(Err))

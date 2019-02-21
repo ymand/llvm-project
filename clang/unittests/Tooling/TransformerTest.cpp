@@ -714,6 +714,119 @@ TEST_F(TransformerTest, MultiRule) {
   compareSnippets(Expected, rewrite(Input));
 }
 
+TEST_F(TransformerTest, RuleSetFirstUnrelated) {
+  std::string Input = R"cc(
+    proto::ProtoCommandLineFlag flag;
+    int x = flag.foo();
+    int y = flag.GetProto().foo();
+    int f(string s) { return strlen(s.c_str()); }
+  )cc";
+  std::string Expected = R"cc(
+    proto::ProtoCommandLineFlag flag;
+    int x = flag.GetProto().foo();
+    int y = flag.GetProto().foo();
+    int f(string s) { return s.size(); }
+  )cc";
+
+  auto Rules = RewriteRuleSet::firstOf({ruleStrlenSize(), ruleFlag()});
+  ASSERT_TRUE(Rules.hasValue());
+  Transformer T(*Rules, changeRecorder());
+  T.registerMatchers(&MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
+}
+
+// Version of ruleStrlenSizeAny that inserts a method with a different name than
+// ruleStrlenSize, so we can tell their effect apart.
+RewriteRule ruleStrlenSizeAnyDistinct() {
+  ExprId S;
+  return RewriteRule()
+      .matching(callExpr(
+          callee(functionDecl(hasName("strlen"))),
+          hasArgument(
+              0, cxxMemberCallExpr(on(S.bind()),
+                                   callee(cxxMethodDecl(hasName("c_str")))))))
+      .replaceWith(S, ".supersize()")
+      .explain("Call supersize() method directly on object '", S, "'");
+}
+
+TEST_F(TransformerTest, RuleSetFirstRelated) {
+  std::string Input = R"cc(
+    namespace foo {
+    struct mystring {
+      char* c_str();
+    };
+    int f(mystring s) { return strlen(s.c_str()); }
+    } // namespace foo
+    int g(string s) { return strlen(s.c_str()); }
+  )cc";
+  std::string Expected = R"cc(
+    namespace foo {
+    struct mystring {
+      char* c_str();
+    };
+    int f(mystring s) { return s.supersize(); }
+    } // namespace foo
+    int g(string s) { return s.size(); }
+  )cc";
+
+  auto Rules =
+      RewriteRuleSet::firstOf({ruleStrlenSize(), ruleStrlenSizeAnyDistinct()});
+  ASSERT_TRUE(Rules.hasValue());
+  Transformer T(*Rules, changeRecorder());
+  T.registerMatchers(&MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
+}
+
+// Change the order of the rules to get a different result.
+TEST_F(TransformerTest, RuleSetFirstRelatedSwapped) {
+  std::string Input = R"cc(
+    namespace foo {
+    struct mystring {
+      char* c_str();
+    };
+    int f(mystring s) { return strlen(s.c_str()); }
+    } // namespace foo
+    int g(string s) { return strlen(s.c_str()); }
+  )cc";
+  std::string Expected = R"cc(
+    namespace foo {
+    struct mystring {
+      char* c_str();
+    };
+    int f(mystring s) { return s.supersize(); }
+    } // namespace foo
+    int g(string s) { return s.supersize(); }
+  )cc";
+
+  auto Rules =
+      RewriteRuleSet::firstOf({ruleStrlenSizeAnyDistinct(), ruleStrlenSize()});
+  ASSERT_TRUE(Rules.hasValue());
+  Transformer T(*Rules, changeRecorder());
+  T.registerMatchers(&MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
+}
+
+TEST_F(TransformerTest, RuleSetEach) {
+  std::string Input = R"cc(
+    proto::ProtoCommandLineFlag flag;
+    int x = flag.foo();
+    int y = flag.GetProto().foo();
+    int f(string s) { return strlen(s.c_str()); }
+  )cc";
+  std::string Expected = R"cc(
+    proto::ProtoCommandLineFlag flag;
+    int x = flag.GetProto().foo();
+    int y = flag.GetProto().foo();
+    int f(string s) { return s.size(); }
+  )cc";
+
+  auto Rules = RewriteRuleSet::eachOf({ruleStrlenSize(), ruleFlag()});
+  ASSERT_TRUE(Rules.hasValue());
+  Transformer T(*Rules, changeRecorder());
+  T.registerMatchers(&MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
+}
+
 // A rule that finds function calls with two arguments where the arguments are
 // the same identifier.
 RewriteRule ruleDuplicateArgs() {
