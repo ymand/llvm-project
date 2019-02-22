@@ -58,28 +58,12 @@ StringRef getText(const T &Node, const ASTContext &Context) {
       CharSourceRange::getTokenRange(internal::getSourceRange(Node)), Context);
 }
 
-// For statements that aren't subexpressions, returns a \p SourceRange that
-// includes the statement's source and any trailing semi.
-CharSourceRange getSourceRangeSmart(const Stmt &S, ASTContext &Context);
-
-// For all clang::Stmts that are direct children of a compound statement,
-// extends the source to include any trailing semi. Returns a SourceRange
-// representing a token range.
-CharSourceRange getSourceRangeSmart(const ast_type_traits::DynTypedNode &Node,
-                                    ASTContext &Context);
-
-// Get the source text of the node, taking into account the node's type and
-// context. In contrast with getText(), this function selects a source range
-// "smartly", extracting text that a reader might intuitively associate with a
-// node.  Currently, only specialized for clang::Stmt, where it will include the
-// trailing semicolon if the node is an entire sub statement of a compound
-// statement.
+// Returns the source range spanning the statement and any trailing semicolon
+// that belongs with that statement.
 //
-// FIXME: choose a better name.
-template <typename T>
-StringRef getSourceSmart(const T &Node, ASTContext &Context) {
-  return internal::getText(getSourceRangeSmart(Node, Context), Context);
-}
+// N.B. The API of this function is still evolving and might change in the
+// future to include more associated text (like comments).
+CharSourceRange getSourceRangeAuto(const Stmt &S, ASTContext &Context);
 
 /// Returns the source range spanning the node, extended to include \p Next, if
 /// it immediately follows \p Node. Otherwise, returns the normal range of \p
@@ -125,20 +109,20 @@ template <typename T> FixItHint createRemoval(const T &Node) {
   return FixItHint::CreateRemoval(internal::getSourceRange(Node));
 }
 
-// Returns a FixItHint to replace \p Destination by \p Source.
-template <typename D, typename S>
-FixItHint createReplacement(const D &Destination, const S &Source,
-                                   const ASTContext &Context) {
-  return FixItHint::CreateReplacement(internal::getSourceRange(Destination),
-                                      getText(Source, Context));
+// Gets the source text of the node, taking into account the node's type and
+// context. In contrast with \p getText(), this function selects a source range
+// "automatically", extracting text that a reader might intuitively associate
+// with a node.  Currently, only specialized for \p clang::Stmt, where it will
+// include any associated trailing semicolon.
+template <typename T>
+StringRef getSourceAuto(const T &Node, ASTContext &Context) {
+  return internal::getText(getSourceRangeAuto(Node, Context), Context);
 }
 
-// Returns a FixItHint to replace \p Destination by \p Source.
-template <typename D>
-FixItHint createReplacement(const D &Destination, StringRef Source) {
-  return FixItHint::CreateReplacement(internal::getSourceRange(Destination),
-                                      Source);
-}
+//
+// Functions to find source locations within nodes.  Used, for example, in
+// determining the location of a FixItHint.
+//
 
 // Returns the start location of the first token starting before \p
 // Start. Returns an invalid location if no previous token is found.
@@ -157,6 +141,9 @@ SourceLocation findPreviousTokenKind(SourceLocation Start,
 // location if no open paren is found.
 SourceLocation findOpenParen(const CallExpr &E, const SourceManager &SM,
                              const LangOptions &LangOpts);
+//
+// Functions to assist in generating source text.
+//
 
 // Conservatively estimates whether the given expression should be wrapped in
 // parentheses when printing (to avoid misinterpretation during parsing),
@@ -186,6 +173,31 @@ std::string formatDot(const ASTContext &Context, const Expr &Expr);
 //  &a becomes a.
 //  a+b becomes (a+b)->
 std::string formatArrow(const ASTContext &Context, const Expr &Expr);
+
+//
+// Functions that help with creating FixItHints.
+//
+
+// Returns a FixItHint to remove \p Node.
+// TODO: Add support for related syntactical elements (i.e. comments, ...).
+template <typename T> FixItHint createRemoval(const T &Node) {
+  return FixItHint::CreateRemoval(internal::getSourceRange(Node));
+}
+
+// Returns a FixItHint to replace \p Destination by \p Source.
+template <typename D, typename S>
+FixItHint createReplacement(const D &Destination, const S &Source,
+                                   const ASTContext &Context) {
+  return FixItHint::CreateReplacement(internal::getSourceRange(Destination),
+                                      getText(Source, Context));
+}
+
+// Returns a FixItHint to replace \p Destination by \p Source.
+template <typename D>
+FixItHint createReplacement(const D &Destination, StringRef Source) {
+  return FixItHint::CreateReplacement(internal::getSourceRange(Destination),
+                                      Source);
+}
 
 } // end namespace fixit
 } // end namespace tooling
