@@ -13,6 +13,7 @@
 using namespace clang;
 
 using tooling::fixit::getText;
+using tooling::fixit::getTextAuto;
 using tooling::fixit::createRemoval;
 using tooling::fixit::createReplacement;
 
@@ -25,6 +26,24 @@ struct CallsVisitor : TestVisitor<CallsVisitor> {
   }
 
   std::function<void(CallExpr *, ASTContext *Context)> OnCall;
+};
+
+struct IfVisitor : TestVisitor<IfVisitor> {
+  bool VisitIfStmt(IfStmt* S) {
+    OnIfStmt(S, Context);
+    return true;
+  }
+
+  std::function<void(IfStmt *, ASTContext *Context)> OnIfStmt;
+};
+
+struct VarDeclVisitor : TestVisitor<VarDeclVisitor> {
+  bool VisitVarDecl(VarDecl* Decl) {
+    OnVarDecl(Decl, Context);
+    return true;
+  }
+
+  std::function<void(VarDecl *, ASTContext *Context)> OnVarDecl;
 };
 
 std::string LocationToString(SourceLocation Loc, ASTContext *Context) {
@@ -75,6 +94,57 @@ TEST(FixItTest, getTextWithMacro) {
   };
   Visitor.runOver("#define FOO(x, y) (void)x; (void)y; foo(x, y);\n"
                   "void foo(int x, int y) { FOO(x,y) }");
+}
+
+TEST(FixItTest, getTextAuto) {
+  CallsVisitor Visitor;
+
+  Visitor.OnCall = [](CallExpr *CE, ASTContext *Context) {
+    EXPECT_EQ("foo(x, y);", getTextAuto(*CE, *Context));
+
+    Expr *P0 = CE->getArg(0);
+    Expr *P1 = CE->getArg(1);
+    EXPECT_EQ("x", getTextAuto(*P0, *Context));
+    EXPECT_EQ("y", getTextAuto(*P1, *Context));
+  };
+  Visitor.runOver("void foo(int x, int y) { foo(x, y); }");
+  Visitor.runOver("void foo(int x, int y) { if (true) foo(x, y); }");
+  Visitor.runOver("void foo(int x, int y) { switch(x) foo(x, y); }");
+  Visitor.runOver("void foo(int x, int y) { switch(x) case 3: foo(x, y); }");
+  Visitor.runOver("void foo(int x, int y) { switch(x) default: foo(x, y); }");
+  Visitor.runOver("void foo(int x, int y) { while (true) foo(x, y); }");
+  Visitor.runOver("void foo(int x, int y) { do foo(x, y); while (true); }");
+  Visitor.runOver("void foo(int x, int y) { for (;;) foo(x, y); }");
+  Visitor.runOver("void foo(int x, int y) { bar: foo(x, y); }");
+
+  Visitor.OnCall = [](CallExpr *CE, ASTContext *Context) {
+    EXPECT_EQ("foo()", getTextAuto(*CE, *Context));
+  };
+  Visitor.runOver("int foo() { return foo(); }");
+  Visitor.runOver("int foo() { 3 + foo(); return 0; }");
+  Visitor.runOver("bool foo() { if (foo()) true; return true; }");
+  Visitor.runOver("bool foo() { switch(foo()) true; return true; }");
+  Visitor.runOver("bool foo() { while (foo()) true; return true; }");
+  Visitor.runOver("bool foo() { do true; while (foo()); return true; }");
+  Visitor.runOver("void foo() { for (foo();;) true; }");
+  Visitor.runOver("bool foo() { for (;foo();) true; return true; }");
+  Visitor.runOver("void foo() { for (;; foo()) true; }");
+}
+
+TEST(FixItTest, getTextAutoNonStatement) {
+  VarDeclVisitor Visitor;
+  Visitor.OnVarDecl = [](VarDecl *D, ASTContext *Context) {
+    EXPECT_EQ(getText(*D, *Context), getTextAuto(*D, *Context));
+  };
+  Visitor.runOver("int foo() { int x = 3; return x; }");
+}
+
+TEST(FixItTest, getTextAutoNonExprStatement) {
+  IfVisitor Visitor;
+  Visitor.OnIfStmt = [](IfStmt *S, ASTContext *Context) {
+    EXPECT_EQ(getText(*S, *Context), getTextAuto(*S, *Context));
+  };
+  Visitor.runOver("int foo() { int x = 3; return x; }");
 }
 
 TEST(FixItTest, createRemoval) {

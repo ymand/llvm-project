@@ -26,21 +26,23 @@ namespace tooling {
 namespace fixit {
 
 namespace internal {
-StringRef getText(SourceRange Range, const ASTContext &Context);
+StringRef getText(CharSourceRange Range, const ASTContext &Context);
 
 /// Returns the SourceRange of a SourceRange. This identity function is
 ///        used by the following template abstractions.
-inline SourceRange getSourceRange(const SourceRange &Range) { return Range; }
+inline CharSourceRange getSourceRange(const SourceRange &Range) {
+  return CharSourceRange::getTokenRange(Range);
+}
 
 /// Returns the SourceRange of the token at Location \p Loc.
-inline SourceRange getSourceRange(const SourceLocation &Loc) {
-  return SourceRange(Loc);
+inline CharSourceRange getSourceRange(const SourceLocation &Loc) {
+  return CharSourceRange::getTokenRange(Loc, Loc);
 }
 
 /// Returns the SourceRange of an given Node. \p Node is typically a
 ///        'Stmt', 'Expr' or a 'Decl'.
-template <typename T> SourceRange getSourceRange(const T &Node) {
-  return Node.getSourceRange();
+template <typename T> CharSourceRange getSourceRange(const T &Node) {
+  return CharSourceRange::getTokenRange(Node.getSourceRange());
 }
 } // end namespace internal
 
@@ -48,6 +50,32 @@ template <typename T> SourceRange getSourceRange(const T &Node) {
 template <typename T>
 StringRef getText(const T &Node, const ASTContext &Context) {
   return internal::getText(internal::getSourceRange(Node), Context);
+}
+
+// Returns the source range spanning the statement and any trailing semicolon
+// that belongs with that statement.
+//
+// N.B. The API of this function is still evolving and might change in the
+// future to include more associated text (like comments).
+CharSourceRange getSourceRangeAuto(const Stmt &S, ASTContext &Context);
+
+CharSourceRange getSourceRangeAuto(const ast_type_traits::DynTypedNode &Node,
+                                   ASTContext &Context);
+// Catch all for any nodes that aren't DynTypedNode or derived from Stmt.
+template <typename T, typename = typename std::enable_if<
+                          (!std::is_base_of<Stmt, T>::value)>::type>
+CharSourceRange getSourceRangeAuto(const T &Node, ASTContext &Context) {
+  return internal::getSourceRange(Node);
+}
+
+// Gets the source text of the node, taking into account the node's type and
+// context. In contrast with \p getText(), this function selects a source range
+// "automatically", extracting text that a reader might intuitively associate
+// with a node.  Currently, only specialized for \p clang::Stmt, where it will
+// include any associated trailing semicolon.
+template <typename T>
+StringRef getTextAuto(const T &Node, ASTContext &Context) {
+  return internal::getText(getSourceRangeAuto(Node, Context), Context);
 }
 
 // Returns a FixItHint to remove \p Node.
