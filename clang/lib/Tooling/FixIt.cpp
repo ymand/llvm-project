@@ -7,7 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // This file contains implementations of utitilies to ease source code rewriting
-// by providing helper functions related to FixItHint.
+// by providing helper functions related to FixItHint, source location analysis
+// and source generation.
 //
 //===----------------------------------------------------------------------===//
 #include "clang/Tooling/FixIt.h"
@@ -232,7 +233,7 @@ static bool isNonSubexprStatement(const Stmt &S, ASTContext &Context) {
   return !isa<Expr>(S) || getStatementParent(S, Context) != nullptr;
 }
 
-CharSourceRange getSourceRangeSmart(const Stmt &S, ASTContext &Context) {
+CharSourceRange getSourceRangeAuto(const Stmt &S, ASTContext &Context) {
   // Only exlude non-statement expressions.
   if (isNonSubexprStatement(S, Context)) {
     // TODO: exclude case where last token is a right brace?
@@ -243,10 +244,10 @@ CharSourceRange getSourceRangeSmart(const Stmt &S, ASTContext &Context) {
   return CharSourceRange::getTokenRange(S.getSourceRange());
 }
 
-CharSourceRange getSourceRangeSmart(const ast_type_traits::DynTypedNode &Node,
-                                    ASTContext &Context) {
+CharSourceRange getSourceRangeAuto(const ast_type_traits::DynTypedNode &Node,
+                                   ASTContext &Context) {
   if (const auto *S = Node.get<Stmt>())
-    return getSourceRangeSmart(*S, Context);
+    return getSourceRangeAuto(*S, Context);
   return CharSourceRange::getTokenRange(Node.getSourceRange());
 }
 
