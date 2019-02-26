@@ -73,6 +73,20 @@ CharSourceRange getSourceRangeAuto(const T &Node, ASTContext &Context) {
 // "automatically", extracting text that a reader might intuitively associate
 // with a node.  Currently, only specialized for \p clang::Stmt, where it will
 // include any associated trailing semicolon.
+//
+// For example, assuming S is
+// \code
+//   if (!x) return foo();
+// \endcode
+// then
+// \code
+//   getTextAuto(S, Context) = "if (!x) return foo();"
+//   getTextAuto(*S.getThen(), Context) = "return foo();"
+// \endcode
+// but,
+// \code
+//   getTextAuto(*S.getThen().getRetValue(), Context) = "foo()"
+// \endcode
 template <typename T>
 StringRef getTextAuto(const T &Node, ASTContext &Context) {
   return internal::getText(getSourceRangeAuto(Node, Context), Context);
