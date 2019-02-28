@@ -187,27 +187,27 @@ TEST_F(TransformerTest, StrlenSizeMacro) {
 }
 
 // Use the lvalue-ref overloads of the RewriteRule builder methods.
-TEST_F(TransformerTest, InvertIfLvalue) {
+TEST_F(TransformerTest, LvalueRefOverloads) {
   StmtId E;
   RewriteRule Rule;
   Rule.matching(ifStmt(hasElse(E.bind())))
       .change(E)
-      .replaceWith(text("foo()"));
+      .replaceWith(text("bar();"));
 
   std::string Input = R"cc(
     void foo() {
       if (10 > 1.0)
-        log(1) << "oh no!";
+        return;
       else
-        log(0) << "ok";
+        foo();
     }
   )cc";
   std::string Expected = R"cc(
     void foo() {
-      if (!(10 > 1.0))
-        log(1) << "oh no!";
+      if (10 > 1.0)
+        return;
       else
-        foo();
+        bar();
     }
   )cc";
 
@@ -219,14 +219,15 @@ TEST_F(TransformerTest, InvertIfLvalue) {
 // Tests replacing an expression.
 TEST_F(TransformerTest, Flag) {
   ExprId Flag;
-  auto Rule = RewriteRule()
-      .matching(cxxMemberCallExpr(
-          on(expr(Flag.bind(), hasType(cxxRecordDecl(
-                                   hasName("proto::ProtoCommandLineFlag"))))),
-          unless(callee(cxxMethodDecl(hasName("GetProto"))))))
-      .change(Flag)
-      .replaceWith(text("EXPR"))
-      .explain("Use GetProto() to access proto fields.");
+  auto Rule =
+      RewriteRule()
+          .matching(cxxMemberCallExpr(
+              on(expr(Flag.bind(), hasType(cxxRecordDecl(hasName(
+                                       "proto::ProtoCommandLineFlag"))))),
+              unless(callee(cxxMethodDecl(hasName("GetProto"))))))
+          .change(Flag)
+          .replaceWith(text("EXPR"))
+          .explain(text("Use GetProto() to access proto fields."));
 
   std::string Input = R"cc(
     proto::ProtoCommandLineFlag flag;
@@ -402,7 +403,7 @@ TEST_F(TransformerTest, NoTransformationInMacro) {
 #define MACRO(str) strlen((str).c_str())
     int f(string s) { return MACRO(s); })cc";
 
-  Transformer T(ruleStrlenSizeAny(), changeRecorder());
+  Transformer T(ruleStrlenSize(), changeRecorder());
   T.registerMatchers(&MatchFinder);
   // The macro should be ignored.
   compareSnippets(Input, rewrite(Input));
@@ -419,7 +420,7 @@ TEST_F(TransformerTest, NoTransformationInNestedMacro) {
 #define MACRO(str) NESTED(strlen((str).c_str()))
     int f(string s) { return MACRO(s); })cc";
 
-  Transformer T(ruleStrlenSizeAny(), changeRecorder());
+  Transformer T(ruleStrlenSize(), changeRecorder());
   T.registerMatchers(&MatchFinder);
   // The macro should be ignored.
   compareSnippets(Input, rewrite(Input));
