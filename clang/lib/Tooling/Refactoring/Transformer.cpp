@@ -91,7 +91,15 @@ static Error verifyTarget(const clang::ast_type_traits::DynTypedNode &Node,
     return typeError("NodePart::kMember applied to non-MemberExpr",
                      Node.getNodeKind());
   case NodePart::kName:
+    if (Node.get<clang::FunctionDecl>() != nullptr) {
+      // All functions have a name with a source range, even that name is not a
+      // plain identifier.
+      return Error::success();
+    }
     if (const auto *D = Node.get<clang::NamedDecl>()) {
+      // NamedDecl does not provide location info for its associated name
+      // (unlike FunctionDecl), so we are limited to identifier names, which are
+      // exactly one token and always begin at D->getLocation().
       if (D->getDeclName().isIdentifier()) {
         return Error::success();
       }
@@ -129,6 +137,9 @@ getTarget(const clang::ast_type_traits::DynTypedNode &Node, NodePart TargetPart,
     TokenLoc = Node.get<clang::MemberExpr>()->getMemberLoc();
     break;
   case NodePart::kName:
+    if (const auto *FD = Node.get<clang::FunctionDecl>()) {
+      return CharSourceRange::getTokenRange(FD->getNameInfo().getSourceRange());
+    }
     if (const auto *D = Node.get<clang::NamedDecl>()) {
       TokenLoc = D->getLocation();
       break;
