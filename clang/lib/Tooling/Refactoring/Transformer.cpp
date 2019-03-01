@@ -75,6 +75,9 @@ static llvm::Error missingPropertyError(llvm::Twine Description,
                               "'");
 }
 
+// FIXME: Factor out code that operates on (Target, Part) pairs for unit
+// testing.
+//
 // Verifies that `node` is appropriate for the given `target_part`.
 static Error verifyTarget(const clang::ast_type_traits::DynTypedNode &Node,
                           NodePart TargetPart) {
@@ -146,7 +149,6 @@ getTarget(const clang::ast_type_traits::DynTypedNode &Node, NodePart TargetPart,
 }
 
 namespace internal {
-// FIXME: take TextChange instead of a Rule.
 Expected<TransformationGroup> transform(const MatchResult &Result,
                                         const RewriteRule &Rule) {
   TransformationGroup Group;
@@ -159,9 +161,9 @@ Expected<TransformationGroup> transform(const MatchResult &Result,
 
   // Get the root as anchor.
   auto &NodesMap = Result.Nodes.getMap();
-  auto Root = NodesMap.find(RewriteRule::rootId());
+  auto Root = NodesMap.find(RewriteRule::matchedNode());
   if (Root == NodesMap.end())
-    return unboundNodeError("root id", RewriteRule::rootId());
+    return unboundNodeError("root id", RewriteRule::matchedNode());
 
   SourceLocation RootLoc = Root->second.getSourceRange().getBegin();
   if (RootLoc.isInvalid() ||
@@ -208,8 +210,6 @@ TextChange &&TextChange::to(Stencil S) && {
   return std::move(*this);
 }
 
-RewriteRule::RewriteRule() : Matcher(stmt()) {}
-
 constexpr char RewriteRule::RootId[];
 
 RewriteRule &
@@ -228,23 +228,21 @@ RewriteRule &RewriteRule::removeHeader(StringRef Header) & {
   return *this;
 }
 
-RewriteRule &RewriteRule::change(TextChange Change) & {
+RewriteRule &RewriteRule::apply(TextChange Change) & {
   Changes.push_back(std::move(Change));
   return *this;
 }
 
-RewriteRule &RewriteRule::changes(std::vector<TextChange> CS) & {
+RewriteRule &RewriteRule::applyAll(std::vector<TextChange> CS) & {
   Changes = std::move(CS);
   return *this;
 }
 
 RewriteRule makeRule(StatementMatcher Matcher, Stencil Replacement,
                      std::string Explanation) {
-  return RewriteRule()
-      .matching(stmt(Matcher))
-      .change(TextChange(RewriteRule::rootId())
-                 .to(std::move(Replacement))
-                 .because(std::move(Explanation)));
+  return RewriteRule(Matcher).apply(TextChange(RewriteRule::matchedNode())
+                                        .to(std::move(Replacement))
+                                        .because(std::move(Explanation)));
 }
 
 void Transformer::registerMatchers(MatchFinder *MatchFinder) {
@@ -317,7 +315,7 @@ maybeTransform(const RewriteRule &Rule,
   if (Rule.changes().size() != 1)
     return invalidArgumentError("rule has multiple changes, which is not "
                                 "allowed when transforming a single node");
-  if (Rule.changes()[0].target() != RewriteRule::rootId() ||
+  if (Rule.changes()[0].target() != RewriteRule::matchedNode() ||
       Rule.changes()[0].part() != NodePart::kNode)
     return invalidArgumentError("rule subselects on node, which is not allowed "
                                 "when transforming a single node");

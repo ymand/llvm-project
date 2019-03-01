@@ -114,14 +114,12 @@ enum class NodePart {
   kName,
 };
 
-// enum class ChangeKind {
-//  Delete, InsertBefore, InsertAfter, Replace,
-// };
 
-// FIXME: Factor out code that operates on (Target, Part) pairs for unit
-// testing.
+// Description of a textual change, based on an AST node. Includes: an id for
+// the (bound) node, (optionally) a selector for a portion of the node (that is
+// not itself an AST node), a replacement and an explanation for the change.
 //
-// FIXME: support include-manipulation here.
+// Examples:
 // \code
 //   TextChange(thenNode).to("{", thenNode, "}")
 //   TextChange(fun, NodePart::Name).to("Frodo")
@@ -152,8 +150,6 @@ class TextChange {
   const Stencil &explanation() const { return Explanation; }
 
  private:
-  // TODO: add ChangeKind to support deletions, insertions.
-
   // The (bound) id of the node whose source will be replaced.  This id should
   // never be the empty string.
   std::string Target;
@@ -175,17 +171,8 @@ class TextChange {
 // * Where: a "where clause" -- that is, a predicate over (matched) AST nodes
 //   that restricts matches beyond what is (easily) expressable as a pattern.
 //
-// * Target: the source code impacted by the rule. This identifies an AST node,
-//   or part thereof, whose source range indicates the extent of the replacement
-//   applied by the replacement term.  By default, the extent is the node
-//   matched by the pattern term.
-//
-// * Replacement: the replacement term, expressed as a code Stencil, which
-//   represents code or text interspersed with references to AST nodes.
-//
-// * Explanation: explanation of the rewrite.  This, too, is represented as a
-//   Stencil to allow specializing the message based on parts of the matched
-//   code fragment.
+// * Changes: a set of changes to the code text, including addition/removal of
+// * headers and textual replacements.
 //
 // Rules have an additional, implicit, component: the parameters. These are
 // portions of the pattern which are left unspecified, yet named so that we can
@@ -200,67 +187,43 @@ class TextChange {
 // the clang matchers and corresponding support for string identifiers in
 // Stencils.
 //
-// All rule components are optional.  An empty RewriteRule, however, matches any
-// statement and replaces it with the empty string, so setting at least some
-// parameters is recommended.
-//
 // RewriteRule is constructed in a "fluent" style, by chaining setters of
 // individual components.  We provide ref-qualified overloads of the setters to
 // avoid an unnecessary copy when a RewriteRule is initialized from a temporary,
 // like:
 //
-//   RewriteRule r =  RewriteRule().Pattern()...
+//   auto R = RewriteRule(stmt(...)).where(...).addHeader("clang/foo.h")...
 class RewriteRule {
 public:
-  RewriteRule();
+  // `RewriteRule` supports all top-level nodes in the AST hierarchy.  We spell
+  // out all of the permitted overloads, rather than defining a template, for
+  // documentation purposes and to give the user clear error messages if they
+  // pass a node that is not one of the permitted types.
+  RewriteRule(CXXCtorInitializerMatcher M)
+      : Matcher(makeMatcher(std::move(M))) {}
+  RewriteRule(DeclarationMatcher M) : Matcher(makeMatcher(std::move(M))) {}
+  RewriteRule(NestedNameSpecifierMatcher M)
+      : Matcher(makeMatcher(std::move(M))) {}
+  RewriteRule(NestedNameSpecifierLocMatcher M)
+      : Matcher(makeMatcher(std::move(M))) {}
+  RewriteRule(StatementMatcher M) : Matcher(makeMatcher(std::move(M))) {}
+  RewriteRule(TemplateArgumentMatcher M) : Matcher(makeMatcher(std::move(M))) {}
+  RewriteRule(TemplateNameMatcher M) : Matcher(makeMatcher(std::move(M))) {}
+  RewriteRule(TypeLocMatcher M) : Matcher(makeMatcher(std::move(M))) {}
+  RewriteRule(TypeMatcher M) : Matcher(makeMatcher(std::move(M))) {}
 
   RewriteRule(const RewriteRule &) = default;
   RewriteRule(RewriteRule &&) = default;
   RewriteRule &operator=(const RewriteRule &) = default;
   RewriteRule &operator=(RewriteRule &&) = default;
 
-  // FIXME: change to somethign that reads better.  matchId? matchNode?
-  static llvm::StringRef rootId() { return RootId; }
-
-  // `Matching()` supports all top-level nodes in the AST hierarchy.  We spell
-  // out all of the permitted overloads, rather than defining a template, for
-  // documentation purposes and to give the user clear error messages if they
-  // pass a node that is not one of the permitted types.
-  RewriteRule &matching(CXXCtorInitializerMatcher M) & {
-    return setMatcher(std::move(M));
-  }
-  RewriteRule &matching(DeclarationMatcher M) & {
-    return setMatcher(std::move(M));
-  }
-  RewriteRule &matching(NestedNameSpecifierMatcher M) & {
-    return setMatcher(std::move(M));
-  }
-  RewriteRule &matching(NestedNameSpecifierLocMatcher M) & {
-    return setMatcher(std::move(M));
-  }
-  RewriteRule &matching(StatementMatcher M) & {
-    return setMatcher(std::move(M));
-  }
-  RewriteRule &matching(TemplateArgumentMatcher M) & {
-    return setMatcher(std::move(M));
-  }
-  RewriteRule &matching(TemplateNameMatcher M) & {
-    return setMatcher(std::move(M));
-  }
-  RewriteRule &matching(TypeLocMatcher M) & { return setMatcher(std::move(M)); }
-  RewriteRule &matching(TypeMatcher M) & { return setMatcher(std::move(M)); }
-
-  template <typename MatcherT> RewriteRule &&matching(MatcherT M) && {
-    return std::move(matching(std::move(M)));
-  }
+  // The bound id of the node corresponding to the matcher.
+  static llvm::StringRef matchedNode() { return RootId; }
 
   RewriteRule &where(MatchFilter::Predicate Filter) &;
   RewriteRule &&where(MatchFilter::Predicate Filter) && {
     return std::move(where(std::move(Filter)));
   }
-
-  // FIXME: add an anchor for changes.  This isn't specific to multi-changes --
-  // its really needed by any matcher that includes a forEach...
 
   RewriteRule &addHeader(StringRef Header) &;
   RewriteRule &&addHeader(StringRef Header) && {
@@ -272,16 +235,14 @@ public:
     return std::move(removeHeader(Header));
   }
 
-  // FIXME: rename to "apply"? as in "apply this change"
-  // Or "add" which parallels addHeader. This will be add(TextChange())
-  RewriteRule &change(TextChange Change) &;
-  RewriteRule &&change(TextChange Change) && {
-    return std::move(change(std::move(Change)));
+  RewriteRule &apply(TextChange Change) &;
+  RewriteRule &&apply(TextChange Change) && {
+    return std::move(apply(std::move(Change)));
   }
 
-  RewriteRule &changes(std::vector<TextChange> Changes) &;
-  RewriteRule &&changes(std::vector<TextChange> Changes) && {
-    return std::move(changes(std::move(Changes)));
+  RewriteRule &applyAll(std::vector<TextChange> Changes) &;
+  RewriteRule &&applyAll(std::vector<TextChange> Changes) && {
+    return std::move(applyAll(std::move(Changes)));
   }
 
   const DynTypedMatcher &matcher() const { return Matcher; }
@@ -291,13 +252,13 @@ public:
   llvm::ArrayRef<TextChange> changes() const { return Changes; }
 
 private:
-  template <typename MatcherT> RewriteRule &setMatcher(MatcherT M) & {
+  template <typename MatcherT> DynTypedMatcher makeMatcher(MatcherT M) {
     auto DM = DynTypedMatcher(M);
     DM.setAllowBind(true);
-    // The default target is `RootId`, so we bind it here. `tryBind` is
-    // guaranteed to succeed, because `AllowBind` is true.
-    Matcher = *DM.tryBind(RootId);
-    return *this;
+    // RewriteRule guarantees that the node described by the matcher will always
+    // be accessible as `RootId`, so we bind it here. `tryBind` is guaranteed to
+    // succeed, because `AllowBind` is true.
+    return *DM.tryBind(RootId);
   }
 
   // Id used as the default target of each match.
@@ -305,14 +266,6 @@ private:
 
   // Supports any (top-level node) matcher type.
 
-  // TODO: Is Matcher ever optional? If not, i'm wondering if we need a fluent
-  // API for RewriteRule anymore. Similarly, Changes is not optional -- must
-  // include at least one change.  Only the filter is optional. But one optional
-  // parameter does not a fluent API make. but, we want to be able to call it
-  // arbitrarily many times. But, does that make sense, vs just calling with a
-  // list and/or a variadic version?  I don't think there's a good argument for
-  // it. It is rather-much wordy.  At the least, move the required arguments to
-  // the constructor and leave the optional ones as methods.
   DynTypedMatcher Matcher;
   MatchFilter Filter;
   std::vector<std::string> AddedHeaders;
@@ -391,9 +344,6 @@ bind(const NodeId &Id, ast_matchers::internal::BindableMatcher<T> Matcher) {
 namespace internal {
 // A source "transformation," represented by a character range in the source to
 // be replaced and a corresponding replacement string.
-//
-// fixme: rename to RewriteEdit? or anything that's < 4 syllables yet not likely
-// to conflict w/ another name in clang::tooling.
 struct Transformation {
   // Trivial constructor to enable `emplace_back()` and the like.
   Transformation(CharSourceRange Range, std::string Replacement)
