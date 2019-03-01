@@ -158,10 +158,6 @@ class TextChange {
   Stencil Explanation;
 };
 
-// TextChange changeTextOf(...);
-// apply, execute, enact, effect.
-// RewriteRule matching(...);
-
 // A *rewrite rule* describes a transformation of source code. It has the
 // following components:
 //
@@ -245,6 +241,7 @@ public:
     return std::move(applyAll(std::move(Changes)));
   }
 
+  // The returned matcher is bindable.
   const DynTypedMatcher &matcher() const { return Matcher; }
   const MatchFilter &filter() const { return Filter; }
   llvm::ArrayRef<std::string> addedHeaders() const { return AddedHeaders; }
@@ -252,13 +249,16 @@ public:
   llvm::ArrayRef<TextChange> changes() const { return Changes; }
 
 private:
-  template <typename MatcherT> DynTypedMatcher makeMatcher(MatcherT M) {
+  template <typename MatcherT> static DynTypedMatcher makeMatcher(MatcherT M) {
     auto DM = DynTypedMatcher(M);
     DM.setAllowBind(true);
     // RewriteRule guarantees that the node described by the matcher will always
     // be accessible as `RootId`, so we bind it here. `tryBind` is guaranteed to
     // succeed, because `AllowBind` is true.
-    return *DM.tryBind(RootId);
+    auto Matcher = *DM.tryBind(RootId);
+    // Allow clients of the rule to bind this matcher.
+    Matcher.setAllowBind(true);
+    return Matcher;
   }
 
   // Id used as the default target of each match.
@@ -278,6 +278,44 @@ private:
 RewriteRule makeRule(StatementMatcher Matcher, Stencil Replacement,
                      std::string Explanation);
 
+// A composition of rules.
+class RewriteRuleSet {
+public:
+
+  // Create a singleton set.
+  explicit RewriteRuleSet(RewriteRule Rule)
+      : MuxMatcher(Rule.matcher()), Rules({std::move(Rule)}) {}
+
+  // assert() instead of optional?
+  static llvm::Optional<RewriteRuleSet>
+  firstOf(std::vector<RewriteRule> Rules) {
+    return constructForOp(DynTypedMatcher::VO_AnyOf, std::move(Rules));
+  }
+
+  static llvm::Optional<RewriteRuleSet> eachOf(std::vector<RewriteRule> Rules) {
+    return constructForOp(DynTypedMatcher::VO_EachOf, std::move(Rules));
+  }
+
+  const DynTypedMatcher &matcher() const { return MuxMatcher; }
+
+  // Returns the rule selected in the given match result.
+  const RewriteRule &
+  findSelectedRule(const ast_matchers::MatchFinder::MatchResult &Result) const;
+
+private:
+  RewriteRuleSet(DynTypedMatcher M, std::vector<RewriteRule> Rs)
+      : MuxMatcher(std::move(M)), Rules(std::move(Rs)) {}
+
+  static llvm::Optional<RewriteRuleSet>
+  constructForOp(DynTypedMatcher::VariadicOperator Op,
+                 std::vector<RewriteRule> Rules);
+
+  // Matcher to that multiplexes all rules in the set.  Demultiplexes is done
+  // by \p selectedIn().
+  DynTypedMatcher MuxMatcher;
+  std::vector<RewriteRule> Rules;
+};
+
 // A class that handles the matcher and callback registration for a single
 // rewrite rule, as defined by the arguments of the constructor.
 class Transformer : public ast_matchers::MatchFinder::MatchCallback {
@@ -286,7 +324,10 @@ public:
       std::function<void(const clang::tooling::AtomicChange &Change)>;
 
   Transformer(RewriteRule Rule, ChangeConsumer Consumer)
-      : Rule(std::move(Rule)), Consumer(std::move(Consumer)) {}
+      : Rules(std::move(Rule)), Consumer(std::move(Consumer)) {}
+
+  Transformer(RewriteRuleSet Rules, ChangeConsumer Consumer)
+      : Rules(std::move(Rules)), Consumer(std::move(Consumer)) {}
 
   // N.B. Passes `this` pointer to `match_finder`.  So, this object should not
   // be moved after this call.
@@ -297,7 +338,7 @@ public:
   void run(const ast_matchers::MatchFinder::MatchResult &Result) override;
 
 private:
-  RewriteRule Rule;
+  RewriteRuleSet Rules;
   ChangeConsumer Consumer;
 };
 
