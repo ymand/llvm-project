@@ -82,6 +82,15 @@ constexpr char KHeaderContents[] = R"cc(
     PCFProto& GetProto();
   };
   }  // namespace proto
+
+  class Base {
+   public:
+    Base();
+    virtual ~Base();
+
+    virtual int Foo() = 0;
+    virtual int Bar(int x) = 0;
+  };
 )cc";
 } // namespace
 
@@ -611,6 +620,163 @@ TEST_F(TransformerTest, NoTransformationInNestedMacro) {
   T.registerMatchers(&MatchFinder);
   // The macro should be ignored.
   compareSnippets(Input, rewrite(Input));
+}
+
+//
+// Complex tests which are more examples of complicated operations than actual
+// unit tests.
+//
+
+TEST_F(TransformerTest, ComplexMultichangeReplace) {
+  using namespace ::clang::ast_matchers;
+
+  std::string Input = R"cc(
+    class Derived : public Base {
+    public:
+      Derived(int x) {}
+      Derived(int x, int y) {}
+      ~Derived() {}
+
+      int Foo() override { return 4; }
+      int Bar(int x) override { return x; }
+    };
+  )cc";
+
+  std::string Expected = R"cc(
+    class DerivedBar : public BarBase {
+    public:
+      DerivedBar() {}
+      ~DerivedBar() override {}
+      int Bar(int x) override { return x; }
+    };
+  )cc";
+
+  DeclId DerivedClass, Constructor, BarMethod;
+  auto ClassMatcher = cxxRecordDecl(
+      isDerivedFrom("Base"),
+      DerivedClass.bind(),
+      hasDescendant(cxxMethodDecl(hasName("Bar"), BarMethod.bind())));
+
+  auto InsertRule =
+      RewriteRule(ClassMatcher)
+          .apply(TextChange(DerivedClass)
+                     .to(Stencil::cat("class ", name(DerivedClass),
+                                      "Bar : public BarBase { ",
+                                      "public: ", name(DerivedClass),
+                                      "Bar() {} ", "~", name(DerivedClass),
+                                      "Bar() override {}", BarMethod, "}")));
+  Transformer T(InsertRule, changeRecorder());
+  T.registerMatchers(&MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
+}
+
+TEST_F(TransformerTest, ComplexMultichangeEdit) {
+  using namespace ::clang::ast_matchers;
+
+  std::string Input = R"cc(
+    class Derived : public Base {
+    public:
+      Derived(int x) {}
+      Derived(int x, int y) {}
+      ~Derived() {}
+
+      int Foo() override { return 4; }
+      int Bar(int x) override { return x; }
+    };
+  )cc";
+
+  std::string Expected = R"cc(
+    class DerivedFoo : public Base {
+    public:
+      DerivedFoo(int x) {}
+      DerivedFoo(int x, int y) {}
+      ~DerivedFoo() {}
+
+      int Foo() override { return 4; }
+    };
+  )cc";
+
+  DeclId DerivedClass, Constructor, Destructor, BarMethod;
+  auto ClassMatcher = cxxRecordDecl(
+      isDerivedFrom("Base"),
+      DerivedClass.bind(),
+      forEachDescendant(cxxConstructorDecl(Constructor.bind())),
+      hasDescendant(cxxDestructorDecl(Destructor.bind())),
+      hasDescendant(cxxMethodDecl(hasName("Bar"), BarMethod.bind())));
+
+  // TODO: change derivation to pubic FooBase. Need selectors for that. Or, a
+  // generator that grabs all the decls in the body of the class (just like
+  // args, statements).
+  auto EditRule =
+      RewriteRule(ClassMatcher)
+          .applyAll({TextChange(DerivedClass, NodePart::kName)
+                         .to(Stencil::cat(name(DerivedClass), "Foo")),
+                     TextChange(Constructor, NodePart::kName)
+                         .to(Stencil::cat(name(DerivedClass), "Foo")),
+                     TextChange(Destructor, NodePart::kName)
+                     .to(Stencil::cat("~", name(DerivedClass), "Foo")),
+                     // Deletion:
+                     TextChange(BarMethod).to(Stencil())});
+
+  Transformer T(EditRule, changeRecorder());
+  T.registerMatchers(&MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
+}
+
+// Split the one rule into two, to handle the iteration over all constructors
+// separately from the singleton edits.
+TEST_F(TransformerTest, ComplexMultichangeEditMultirule) {
+  using namespace ::clang::ast_matchers;
+
+  std::string Input = R"cc(
+    class Derived : public Base {
+    public:
+      Derived(int x) {}
+      Derived(int x, int y) {}
+      ~Derived() {}
+
+      int Foo() override { return 4; }
+      int Bar(int x) override { return x; }
+    };
+  )cc";
+
+  std::string Expected = R"cc(
+    class DerivedFoo : public Base {
+    public:
+      DerivedFoo(int x) {}
+      DerivedFoo(int x, int y) {}
+      ~DerivedFoo() {}
+
+      int Foo() override { return 4; }
+    };
+  )cc";
+
+  std::vector<RewriteRule> Rules;
+  DeclId DerivedClass, Constructor, Destructor, BarMethod;
+  auto ClassMatcher = cxxRecordDecl(
+      isDerivedFrom("Base"),
+      DerivedClass.bind(),
+      hasDescendant(cxxDestructorDecl(Destructor.bind())),
+      hasDescendant(cxxMethodDecl(hasName("Bar"), BarMethod.bind())));
+  Rules.push_back(
+      RewriteRule(ClassMatcher)
+          .applyAll({TextChange(DerivedClass, NodePart::kName)
+                         .to(Stencil::cat(name(DerivedClass), "Foo")),
+                     TextChange(Destructor, NodePart::kName)
+                     .to(Stencil::cat("~", name(DerivedClass), "Foo")),
+                     // Deletion:
+                     TextChange(BarMethod).to(Stencil())}));
+
+  auto ConstructorMatcher = cxxRecordDecl(
+      isDerivedFrom("Base"),
+      DerivedClass.bind(),
+      forEachDescendant(cxxConstructorDecl(Constructor.bind())));
+  Rules.push_back(RewriteRule(ConstructorMatcher)
+                      .apply(TextChange(Constructor, NodePart::kName)
+                                 .to(Stencil::cat(name(DerivedClass), "Foo"))));
+
+  MultiTransformer T(std::move(Rules), changeRecorder(), &MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
 }
 
 #if 0
