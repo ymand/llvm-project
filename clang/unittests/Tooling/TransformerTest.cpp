@@ -82,6 +82,15 @@ constexpr char KHeaderContents[] = R"cc(
     PCFProto& GetProto();
   };
   }  // namespace proto
+
+  class Base {
+   public:
+    Base();
+    virtual ~Base();
+
+    virtual int Foo() = 0;
+    virtual int Bar(int x) = 0;
+  };
 )cc";
 } // namespace
 
@@ -159,17 +168,20 @@ protected:
   }
 };
 
+static TextChange changeAll() { return TextChange(RewriteRule::matchedNode()); }
+
 // Change strlen($s.c_str()) to $s.size().
 RewriteRule ruleStrlenSizeAny() {
   ExprId S;
-  return RewriteRule()
-      .matching(callExpr(
-          callee(functionDecl(hasName("strlen"))),
-          hasArgument(
-              0, cxxMemberCallExpr(on(S.bind()),
-                                   callee(cxxMethodDecl(hasName("c_str")))))))
-      .replaceWith(S, ".size()")
-      .explain("Call size() method directly on object '", S, "'");
+  return RewriteRule(
+             callExpr(
+                 callee(functionDecl(hasName("strlen"))),
+                 hasArgument(0, cxxMemberCallExpr(
+                                    on(S.bind()),
+                                    callee(cxxMethodDecl(hasName("c_str")))))))
+      .apply(changeAll()
+                 .to(Stencil::cat(S, ".size()"))
+                 .because("Call size() method directly on object '", S, "'"));
 }
 
 // Tests that code that looks the same not involving the canonical string type
@@ -195,7 +207,7 @@ TEST_F(TransformerTest, OtherStringTypeWithAny) {
   compareSnippets(Expected, rewrite(Input));
 }
 
-// Given string s, change strlen($s.c_str()) to $s.size()
+// Tests makeRule.
 RewriteRule ruleStrlenSize() {
   ExprId StringExpr;
   auto StringType = namedDecl(hasAnyName("::basic_string", "::string"));
@@ -218,43 +230,6 @@ TEST_F(TransformerTest, StrlenSize) {
   compareSnippets(Expected, rewrite(Input));
 }
 
-TEST_F(TransformerTest, StrlenSizePointer) {
-  std::string Input = "int f(string* s) { return strlen(s->c_str()); }";
-  std::string Expected = "int f(string* s) { return s->size(); }";
-
-  Transformer T(ruleStrlenSize(), changeRecorder());
-  T.registerMatchers(&MatchFinder);
-  compareSnippets(Expected, rewrite(Input));
-}
-
-// Variant of StrlenSizePointer where the source is more verbose. We check for
-// the same result.
-TEST_F(TransformerTest, StrlenSizePointerExplicit) {
-  std::string Input = "int f(string* s) { return strlen((*s).c_str()); }";
-  std::string Expected = "int f(string* s) { return s->size(); }";
-
-  Transformer T(ruleStrlenSize(), changeRecorder());
-  T.registerMatchers(&MatchFinder);
-  compareSnippets(Expected, rewrite(Input));
-}
-
-// Tests that code that looks the same but involves another type, even with the
-// (unqualified) name "string", does not match.
-TEST_F(TransformerTest, OtherStringType) {
-  std::string Input =
-      R"cc(namespace foo {
-           struct string {
-             char* c_str();
-           };
-           int f(string s) { return strlen(s.c_str()); }
-           }  // namespace foo)cc";
-
-  Transformer T(ruleStrlenSize(), changeRecorder());
-  T.registerMatchers(&MatchFinder);
-  // Input should not be changed.
-  compareSnippets(Input, rewrite(Input));
-}
-
 // Tests that expressions in macro arguments are rewritten (when applicable).
 TEST_F(TransformerTest, StrlenSizeMacro) {
   std::string Input = R"cc(
@@ -269,54 +244,32 @@ TEST_F(TransformerTest, StrlenSizeMacro) {
   compareSnippets(Expected, rewrite(Input));
 }
 
-// RuleStrlenSize, but where the user manually manages the AST node ids.
-RewriteRule ruleStrlenSizeManual() {
-  auto StringType = namedDecl(hasAnyName("::basic_string", "::string"));
-  return makeRule(
-      callExpr(callee(functionDecl(hasName("strlen"))),
-               hasArgument(
-                   0, cxxMemberCallExpr(
-                          on(id("s", expr(hasType(isOrPointsTo(StringType))))),
-                          callee(cxxMethodDecl(hasName("c_str")))))),
-      Stencil::cat(member("s", "size()")),
-      "Use size() method directly on string.");
-}
-
-TEST_F(TransformerTest, StrlenSizeManual) {
-  std::string Input = "int f(string s) { return strlen(s.c_str()); }";
-  std::string Expected = "int f(string s) { return s.size(); }";
-
-  Transformer T(ruleStrlenSizeManual(), changeRecorder());
-  T.registerMatchers(&MatchFinder);
-  compareSnippets(Expected, rewrite(Input));
-}
-
-RewriteRule ruleRenameFunctionAddInclude() {
+RewriteRule ruleRenameFunctionAddHeader() {
   ExprId Arg;
-  return RewriteRule()
-      .matching(callExpr(callee(functionDecl(hasName("update"))),
-                         hasArgument(0, Arg.bind())))
-      .replaceWith(addInclude("foo/updater.h"), "updateAddress(", Arg, ")");
+  return RewriteRule(callExpr(callee(functionDecl(hasName("update"))),
+                              hasArgument(0, Arg.bind())))
+      .addHeader("foo/updater.h")
+      .apply(changeAll().to(Stencil::cat("updateAddress(", Arg, ")")));
 }
 
-RewriteRule ruleRenameFunctionRemoveInclude() {
+RewriteRule ruleRenameFunctionRemoveHeader() {
   ExprId Arg;
-  return RewriteRule()
-      .matching(callExpr(callee(functionDecl(hasName("updateAddress"))),
+  return RewriteRule(callExpr(callee(functionDecl(hasName("updateAddress"))),
                          hasArgument(0, Arg.bind())))
-      .replaceWith(removeInclude("foo/updater.h"), "update(", Arg, ")");
+      .removeHeader("foo/updater.h")
+      .apply(changeAll().to(Stencil::cat("update(", Arg, ")")));
 }
 
-RewriteRule ruleRenameFunctionChangeInclude() {
+RewriteRule ruleRenameFunctionChangeHeader() {
   ExprId Arg;
-  return RewriteRule()
-      .matching(callExpr(callee(functionDecl(hasName("update"))),
+  return RewriteRule(callExpr(callee(functionDecl(hasName("update"))),
                          hasArgument(0, Arg.bind())))
-      .replaceWith(removeInclude("bar/updater.h"), addInclude("foo/updater.h"),
-                   "updateAddress(", Arg, ")");
+      .removeHeader("bar/updater.h")
+      .addHeader("foo/updater.h")
+      .apply(changeAll().to(Stencil::cat("updateAddress(", Arg, ")")));
 }
 
-TEST_F(TransformerTest, AddInclude) {
+TEST_F(TransformerTest, AddHeader) {
   std::string Input = R"cc(
     int update(int *i);
     int f(int i) { return update(&i); })cc";
@@ -326,12 +279,12 @@ TEST_F(TransformerTest, AddInclude) {
            int update(int *i);
            int f(int i) { return updateAddress(&i); })cc";
 
-  Transformer T(ruleRenameFunctionAddInclude(), changeRecorder());
+  Transformer T(ruleRenameFunctionAddHeader(), changeRecorder());
   T.registerMatchers(&MatchFinder);
   compareSnippets(Expected, rewrite(Input));
 }
 
-TEST_F(TransformerTest, RemoveInclude) {
+TEST_F(TransformerTest, RemoveHeader) {
   addFile("foo/updater.h", "int updateAddress(int *i);");
   std::string Input =
       R"cc(#include "foo/updater.h"
@@ -342,12 +295,12 @@ TEST_F(TransformerTest, RemoveInclude) {
     int update(int *i);
     int f(int i) { return update(&i); })cc";
 
-  Transformer T(ruleRenameFunctionRemoveInclude(), changeRecorder());
+  Transformer T(ruleRenameFunctionRemoveHeader(), changeRecorder());
   T.registerMatchers(&MatchFinder);
   compareSnippets(Expected, rewrite(Input));
 }
 
-TEST_F(TransformerTest, ChangeInclude) {
+TEST_F(TransformerTest, ChangeHeader) {
   addFile("bar/updater.h", "int update(int *i);");
   std::string Input =
       R"cc(#include "bar/updater.h"
@@ -356,95 +309,7 @@ TEST_F(TransformerTest, ChangeInclude) {
       R"cc(#include "foo/updater.h"
            int f(int i) { return updateAddress(&i); })cc";
 
-  Transformer T(ruleRenameFunctionChangeInclude(), changeRecorder());
-  T.registerMatchers(&MatchFinder);
-  compareSnippets(Expected, rewrite(Input));
-}
-
-//
-// Inspired by a clang-tidy request:
-//
-// Change if ($e) {log($level) << $msg;} to
-//    LOG_IF($level, $e) << $msg;
-//
-// We use a function, log(), rather than a macro, LOG(), to simplify the matcher
-// needed.
-RewriteRule ruleLogIf() {
-  ExprId Condition;
-  ExprId Level;
-  ExprId Msg;
-  auto LogCall = callExpr(callee(functionDecl(hasName("log"))),
-                          hasArgument(0, Level.bind()));
-  return makeRule(
-      ifStmt(hasCondition(Condition.bind()),
-             hasThen(expr(ignoringImplicit(cxxOperatorCallExpr(
-                 hasOverloadedOperatorName("<<"), hasArgument(0, LogCall),
-                 hasArgument(1, Msg.bind()))))),
-             unless(hasElse(expr()))),
-      Stencil::cat("LOG_IF(", Level, ", ", parens(Condition), ") << ", Msg, ";"),
-      "Use LOG_IF() when LOG() is only member of if statement.");
-}
-
-TEST_F(TransformerTest, LogIf) {
-  std::string Input = R"cc(
-    double x = 3.0;
-    void foo() {
-      if (x > 1.0) log(1) << "oh no!";
-    }
-    void bar() {
-      if (x > 1.0)
-        log(1) << "oh no!";
-      else
-        log(0) << "ok";
-    }
-  )cc";
-  std::string Expected = R"cc(
-    double x = 3.0;
-    void foo() { LOG_IF(1, (x > 1.0)) << "oh no!"; }
-    void bar() {
-      if (x > 1.0)
-        log(1) << "oh no!";
-      else
-        log(0) << "ok";
-    }
-  )cc";
-
-  Transformer T(ruleLogIf(), changeRecorder());
-  T.registerMatchers(&MatchFinder);
-  compareSnippets(Expected, rewrite(Input));
-}
-
-// Tests RuleLogIf when we expect the output condition not to be wrapped in
-// parens.
-TEST_F(TransformerTest, LogIfNoParens) {
-  std::string Input = R"cc(
-    double x = 3.0;
-    void foo() {
-      bool condition = x > 1.0;
-      if (condition) log(1) << "oh no!";
-    }
-    void bar() {
-      if (x > 1.0)
-        log(1) << "oh no!";
-      else
-        log(0) << "ok";
-    }
-  )cc";
-  std::string Expected = R"cc(
-    double x = 3.0;
-    void foo() {
-      bool condition = x > 1.0;
-      LOG_IF(1, condition) << "oh no!";
-    }
-    void bar() {
-      if (x > 1.0)
-        log(1) << "oh no!";
-      else
-        log(0) << "ok";
-    }
-  )cc";
-
-  Transformer T(ruleLogIf(), changeRecorder());
+  Transformer T(ruleRenameFunctionChangeHeader(), changeRecorder());
   T.registerMatchers(&MatchFinder);
   compareSnippets(Expected, rewrite(Input));
 }
@@ -456,24 +321,14 @@ TEST_F(TransformerTest, LogIfNoParens) {
 RewriteRule invertIf() {
   ExprId C;
   StmtId T, E;
-  return RewriteRule()
-      .matching(
-          ifStmt(hasCondition(C.bind()), hasThen(T.bind()), hasElse(E.bind())))
-      .replaceWith("if(!(", C, ")) ", E, " else ", T);
+  return RewriteRule(ifStmt(hasCondition(C.bind()), hasThen(T.bind()),
+                            hasElse(E.bind())))
+      .applyAll({TextChange(C).to(Stencil::cat("!(", C, ")")),
+                 TextChange(T).to(Stencil::cat(E)),
+                 TextChange(E).to(Stencil::cat(T))});
 }
 
-// Use the lvalue-ref overloads of the RewriteRule builder methods.
-RewriteRule invertIfLvalue() {
-  ExprId C;
-  StmtId T, E;
-  RewriteRule Rule;
-  Rule.matching(
-          ifStmt(hasCondition(C.bind()), hasThen(T.bind()), hasElse(E.bind())))
-      .replaceWith("if(!(", C, ")) ", E, " else ", T);
-  return Rule;
-}
-
-TEST_F(TransformerTest, InvertIf) {
+TEST_F(TransformerTest, InvertIfMultiChange) {
   std::string Input = R"cc(
     void foo() {
       if (10 > 1.0)
@@ -494,6 +349,20 @@ TEST_F(TransformerTest, InvertIf) {
   Transformer T(invertIf(), changeRecorder());
   T.registerMatchers(&MatchFinder);
   compareSnippets(Expected, rewrite(Input));
+}
+
+
+// Use the lvalue-ref overloads of the builder methods.
+RewriteRule invertIfLvalue() {
+  ExprId C;
+  StmtId T, E;
+  RewriteRule R(
+      ifStmt(hasCondition(C.bind()), hasThen(T.bind()), hasElse(E.bind())));
+  TextChange Change = changeAll();
+  Change.setReplacement(Stencil::cat("if(!(", C, ")) ", E, " else ", T));
+  Change.setExplanation("message");
+  R.apply(Change);
+  return R;
 }
 
 TEST_F(TransformerTest, InvertIfLvalue) {
@@ -524,14 +393,14 @@ TEST_F(TransformerTest, InvertIfLvalue) {
 //
 RewriteRule ruleFlag() {
   ExprId Flag;
-  return RewriteRule()
-      .matching(cxxMemberCallExpr(
-          on(expr(Flag.bind(), hasType(cxxRecordDecl(
-                                   hasName("proto::ProtoCommandLineFlag"))))),
-          unless(callee(cxxMethodDecl(hasName("GetProto"))))))
-      .change(Flag)
-      .replaceWith(Flag, ".GetProto()")
-      .explain("Use GetProto() to access proto fields.");
+  return RewriteRule(
+             cxxMemberCallExpr(
+                 on(expr(Flag.bind(), hasType(cxxRecordDecl(hasName(
+                                          "proto::ProtoCommandLineFlag"))))),
+                 unless(callee(cxxMethodDecl(hasName("GetProto"))))))
+      .apply(TextChange(Flag)
+                  .to(Stencil::cat(Flag, ".GetProto()"))
+                  .because("Use GetProto() to access proto fields."));
 }
 
 TEST_F(TransformerTest, Flag) {
@@ -551,49 +420,13 @@ TEST_F(TransformerTest, Flag) {
   compareSnippets(Expected, rewrite(Input));
 }
 
-// Variant of RuleFlag that doesn't rely on specifying a particular
-// target. Instead, we explicitly bind the decl of the invoked method and refer
-// to it in the code using the Name() operator.
-RewriteRule ruleFlagNoTarget() {
-  ExprId Flag;
-  DeclId Method;
-  return makeRule(
-      cxxMemberCallExpr(
-          on(bind(Flag, expr(hasType(cxxRecordDecl(
-                            hasName("proto::ProtoCommandLineFlag")))))),
-          callee(bind(Method, cxxMethodDecl(unless(hasName("GetProto"))))),
-          argumentCountIs(0)),
-      Stencil::cat(addInclude("fake/for/test.h"), member(Flag, "GetProto()"),
-                   ".", name(Method), "()"),
-      "Use GetProto() to access proto fields.");
-}
-
-// Tests use of Name() operator.
-TEST_F(TransformerTest, FlagWithName) {
-  std::string Input = R"cc(
-    proto::ProtoCommandLineFlag flag;
-    int x = flag.foo();
-    int y = flag.GetProto().foo();
-  )cc";
-  std::string Expected =
-      R"cc(#include "fake/for/test.h"
-
-           proto::ProtoCommandLineFlag flag;
-           int x = flag.GetProto().foo();
-           int y = flag.GetProto().foo();
-      )cc";
-
-  Transformer T(ruleFlagNoTarget(), changeRecorder());
-  T.registerMatchers(&MatchFinder);
-  compareSnippets(Expected, rewrite(Input));
-}
+// Convenience definition for readability.
+static Stencil goodText() { return Stencil::cat("good"); }
 
 RewriteRule ruleChangeFunctionName() {
   DeclId Fun;
-  return RewriteRule()
-      .matching(functionDecl(hasName("bad"), Fun.bind()))
-      .change(Fun, NodePart::kName)
-      .replaceWith("good");
+  return RewriteRule(functionDecl(hasName("bad"), Fun.bind()))
+      .apply(TextChange(Fun, NodePart::kName).to(goodText()));
 }
 
 TEST_F(TransformerTest, NodePartNameNamedDecl) {
@@ -629,10 +462,8 @@ TEST_F(TransformerTest, NodePartNameDeclRef) {
 
   ExprId Ref;
   Transformer T(
-      RewriteRule()
-          .matching(declRefExpr(to(functionDecl(hasName("bad"))), Ref.bind()))
-          .change(Ref, NodePart::kName)
-          .replaceWith("good"),
+      RewriteRule(declRefExpr(to(functionDecl(hasName("bad"))), Ref.bind()))
+      .apply(TextChange(Ref, NodePart::kName).to(goodText())),
       changeRecorder());
   T.registerMatchers(&MatchFinder);
   compareSnippets(Expected, rewrite(Input));
@@ -649,10 +480,8 @@ TEST_F(TransformerTest, NodePartNameDeclRefFailure) {
   )cc";
 
   ExprId Ref;
-  Transformer T(RewriteRule()
-                    .matching(declRefExpr(to(functionDecl()), Ref.bind()))
-                    .change(Ref, NodePart::kName)
-                    .replaceWith("good"),
+  Transformer T(RewriteRule(declRefExpr(to(functionDecl()), Ref.bind()))
+                .apply(TextChange(Ref, NodePart::kName).to(goodText())),
                 changeRecorder());
   T.registerMatchers(&MatchFinder);
   compareSnippets(Input, rewrite(Input));
@@ -660,10 +489,8 @@ TEST_F(TransformerTest, NodePartNameDeclRefFailure) {
 
 RewriteRule ruleChangeFieldName() {
   ExprId E;
-  return RewriteRule()
-      .matching(memberExpr(member(hasName("bad")), E.bind()))
-      .change(E, NodePart::kMember)
-      .replaceWith("good");
+  return RewriteRule(memberExpr(member(hasName("bad")), E.bind()))
+      .apply(TextChange(E, NodePart::kMember).to(goodText()));
 }
 
 TEST_F(TransformerTest, NodePartMember) {
@@ -718,9 +545,8 @@ TEST_F(TransformerTest, MultiRule) {
 // the same identifier.
 RewriteRule ruleDuplicateArgs() {
   ExprId Arg0, Arg1;
-  return RewriteRule()
-      .matching(callExpr(argumentCountIs(2), hasArgument(0, Arg0.bind()),
-                         hasArgument(1, Arg1.bind())))
+  return RewriteRule(callExpr(argumentCountIs(2), hasArgument(0, Arg0.bind()),
+                              hasArgument(1, Arg1.bind())))
       .where([Arg0, Arg1](
                  const clang::ast_matchers::MatchFinder::MatchResult &result) {
         auto *Ref0 = Arg0.getNodeAs<clang::DeclRefExpr>(result);
@@ -728,7 +554,7 @@ RewriteRule ruleDuplicateArgs() {
         return Ref0 != nullptr && Ref1 != nullptr &&
                Ref0->getDecl() == Ref1->getDecl();
       })
-      .replaceWith("42");
+      .apply(changeAll().to(goodText()));
 }
 
 TEST_F(TransformerTest, FilterPassed) {
@@ -740,7 +566,7 @@ TEST_F(TransformerTest, FilterPassed) {
   std::string Expected = R"cc(
     int foo(int x, int y);
     int x = 3;
-    int z = 42;
+    int z = good;
   )cc";
 
   Transformer T(ruleDuplicateArgs(), changeRecorder());
@@ -796,6 +622,164 @@ TEST_F(TransformerTest, NoTransformationInNestedMacro) {
   compareSnippets(Input, rewrite(Input));
 }
 
+//
+// Complex tests which are more examples of complicated operations than actual
+// unit tests.
+//
+
+TEST_F(TransformerTest, ComplexMultichangeReplace) {
+  using namespace ::clang::ast_matchers;
+
+  std::string Input = R"cc(
+    class Derived : public Base {
+    public:
+      Derived(int x) {}
+      Derived(int x, int y) {}
+      ~Derived() {}
+
+      int Foo() override { return 4; }
+      int Bar(int x) override { return x; }
+    };
+  )cc";
+
+  std::string Expected = R"cc(
+    class DerivedBar : public BarBase {
+    public:
+      DerivedBar() {}
+      ~DerivedBar() override {}
+      int Bar(int x) override { return x; }
+    };
+  )cc";
+
+  DeclId DerivedClass, Constructor, BarMethod;
+  auto ClassMatcher = cxxRecordDecl(
+      isDerivedFrom("Base"),
+      DerivedClass.bind(),
+      hasDescendant(cxxMethodDecl(hasName("Bar"), BarMethod.bind())));
+
+  auto InsertRule =
+      RewriteRule(ClassMatcher)
+          .apply(TextChange(DerivedClass)
+                     .to(Stencil::cat("class ", name(DerivedClass),
+                                      "Bar : public BarBase { ",
+                                      "public: ", name(DerivedClass),
+                                      "Bar() {} ", "~", name(DerivedClass),
+                                      "Bar() override {}", BarMethod, "}")));
+  Transformer T(InsertRule, changeRecorder());
+  T.registerMatchers(&MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
+}
+
+TEST_F(TransformerTest, ComplexMultichangeEdit) {
+  using namespace ::clang::ast_matchers;
+
+  std::string Input = R"cc(
+    class Derived : public Base {
+    public:
+      Derived(int x) {}
+      Derived(int x, int y) {}
+      ~Derived() {}
+
+      int Foo() override { return 4; }
+      int Bar(int x) override { return x; }
+    };
+  )cc";
+
+  std::string Expected = R"cc(
+    class DerivedFoo : public Base {
+    public:
+      DerivedFoo(int x) {}
+      DerivedFoo(int x, int y) {}
+      ~DerivedFoo() {}
+
+      int Foo() override { return 4; }
+    };
+  )cc";
+
+  DeclId DerivedClass, Constructor, Destructor, BarMethod;
+  auto ClassMatcher = cxxRecordDecl(
+      isDerivedFrom("Base"),
+      DerivedClass.bind(),
+      forEachDescendant(cxxConstructorDecl(Constructor.bind())),
+      hasDescendant(cxxDestructorDecl(Destructor.bind())),
+      hasDescendant(cxxMethodDecl(hasName("Bar"), BarMethod.bind())));
+
+  // TODO: change derivation to pubic FooBase. Need selectors for that. Or, a
+  // generator that grabs all the decls in the body of the class (just like
+  // args, statements).
+  auto EditRule =
+      RewriteRule(ClassMatcher)
+          .applyAll({TextChange(DerivedClass, NodePart::kName)
+                         .to(Stencil::cat(name(DerivedClass), "Foo")),
+                     TextChange(Constructor, NodePart::kName)
+                         .to(Stencil::cat(name(DerivedClass), "Foo")),
+                     TextChange(Destructor, NodePart::kName)
+                     .to(Stencil::cat("~", name(DerivedClass), "Foo")),
+                     // Deletion:
+                     TextChange(BarMethod).to(Stencil())});
+
+  Transformer T(EditRule, changeRecorder());
+  T.registerMatchers(&MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
+}
+
+// Split the one rule into two, to handle the iteration over all constructors
+// separately from the singleton edits.
+TEST_F(TransformerTest, ComplexMultichangeEditMultirule) {
+  using namespace ::clang::ast_matchers;
+
+  std::string Input = R"cc(
+    class Derived : public Base {
+    public:
+      Derived(int x) {}
+      Derived(int x, int y) {}
+      ~Derived() {}
+
+      int Foo() override { return 4; }
+      int Bar(int x) override { return x; }
+    };
+  )cc";
+
+  std::string Expected = R"cc(
+    class DerivedFoo : public Base {
+    public:
+      DerivedFoo(int x) {}
+      DerivedFoo(int x, int y) {}
+      ~DerivedFoo() {}
+
+      int Foo() override { return 4; }
+    };
+  )cc";
+
+  std::vector<RewriteRule> Rules;
+  DeclId DerivedClass, Constructor, Destructor, BarMethod;
+  auto ClassMatcher = cxxRecordDecl(
+      isDerivedFrom("Base"),
+      DerivedClass.bind(),
+      hasDescendant(cxxDestructorDecl(Destructor.bind())),
+      hasDescendant(cxxMethodDecl(hasName("Bar"), BarMethod.bind())));
+  Rules.push_back(
+      RewriteRule(ClassMatcher)
+          .applyAll({TextChange(DerivedClass, NodePart::kName)
+                         .to(Stencil::cat(name(DerivedClass), "Foo")),
+                     TextChange(Destructor, NodePart::kName)
+                     .to(Stencil::cat("~", name(DerivedClass), "Foo")),
+                     // Deletion:
+                     TextChange(BarMethod).to(Stencil())}));
+
+  auto ConstructorMatcher = cxxRecordDecl(
+      isDerivedFrom("Base"),
+      DerivedClass.bind(),
+      forEachDescendant(cxxConstructorDecl(Constructor.bind())));
+  Rules.push_back(RewriteRule(ConstructorMatcher)
+                      .apply(TextChange(Constructor, NodePart::kName)
+                                 .to(Stencil::cat(name(DerivedClass), "Foo"))));
+
+  MultiTransformer T(std::move(Rules), changeRecorder(), &MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
+}
+
+#if 0
 //
 // maybeTransform tests
 //
@@ -856,8 +840,7 @@ TEST_F(MaybeTransformTest, SuccessRuleApplies) {
 }
 
 TEST_F(MaybeTransformTest, SuccessRuleDoesNotApply) {
-  auto Rule = RewriteRule()
-                  .matching(callExpr(callee(functionDecl(hasName("foo")))))
+  auto Rule = RewriteRule(callExpr(callee(functionDecl(hasName("foo")))))
                   .replaceWith("bar()");
   auto ResultOrErr = maybeTransform(Rule, Node, context());
   if (auto Err = ResultOrErr.takeError()) {
@@ -890,5 +873,6 @@ TEST_F(MaybeTransformTest, FailureMultiMatch) {
       << "Expected rewrite to fail on too many matches: "
       << errString(*ResultOrErr);
 }
+#endif
 } // namespace tooling
 } // namespace clang

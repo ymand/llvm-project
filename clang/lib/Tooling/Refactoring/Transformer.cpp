@@ -75,6 +75,9 @@ static llvm::Error missingPropertyError(llvm::Twine Description,
                               "'");
 }
 
+// FIXME: Factor out code that operates on (Target, Part) pairs for unit
+// testing.
+//
 // Verifies that `node` is appropriate for the given `target_part`.
 static Error verifyTarget(const clang::ast_type_traits::DynTypedNode &Node,
                           NodePart TargetPart) {
@@ -88,7 +91,15 @@ static Error verifyTarget(const clang::ast_type_traits::DynTypedNode &Node,
     return typeError("NodePart::kMember applied to non-MemberExpr",
                      Node.getNodeKind());
   case NodePart::kName:
+    if (Node.get<clang::FunctionDecl>() != nullptr) {
+      // All functions have a name with a source range, even that name is not a
+      // plain identifier.
+      return Error::success();
+    }
     if (const auto *D = Node.get<clang::NamedDecl>()) {
+      // NamedDecl does not provide location info for its associated name
+      // (unlike FunctionDecl), so we are limited to identifier names, which are
+      // exactly one token and always begin at D->getLocation().
       if (D->getDeclName().isIdentifier()) {
         return Error::success();
       }
@@ -115,16 +126,20 @@ static Error verifyTarget(const clang::ast_type_traits::DynTypedNode &Node,
 }
 
 // Requires VerifyTarget(node, target_part) == success.
-static CharSourceRange getTarget(const clang::ast_type_traits::DynTypedNode &Node,
-                             NodePart TargetPart, ASTContext &Context) {
+static CharSourceRange
+getTarget(const clang::ast_type_traits::DynTypedNode &Node, NodePart TargetPart,
+          ASTContext &Context) {
   SourceLocation TokenLoc;
   switch (TargetPart) {
   case NodePart::kNode:
-    return fixit::getSourceRangeSmart(Node, Context);
+    return fixit::getSourceRangeAuto(Node, Context);
   case NodePart::kMember:
     TokenLoc = Node.get<clang::MemberExpr>()->getMemberLoc();
     break;
   case NodePart::kName:
+    if (const auto *FD = Node.get<clang::FunctionDecl>()) {
+      return CharSourceRange::getTokenRange(FD->getNameInfo().getSourceRange());
+    }
     if (const auto *D = Node.get<clang::NamedDecl>()) {
       TokenLoc = D->getLocation();
       break;
@@ -145,43 +160,66 @@ static CharSourceRange getTarget(const clang::ast_type_traits::DynTypedNode &Nod
 }
 
 namespace internal {
-Expected<Transformation> transform(const MatchResult &Result,
-                                   const RewriteRule &Rule) {
+Expected<TransformationGroup> transform(const MatchResult &Result,
+                                        const RewriteRule &Rule) {
+  TransformationGroup Group;
+
   // Ignore results in failing TUs or those rejected by the where clause.
   if (Result.Context->getDiagnostics().hasErrorOccurred() ||
       !Rule.filter().matches(Result)) {
-    return Transformation();
+    return Group;
   }
 
+  // Get the root as anchor.
   auto &NodesMap = Result.Nodes.getMap();
-  auto It = NodesMap.find(Rule.target());
-  if (It == NodesMap.end()) {
-    return unboundNodeError("rule.target()", Rule.target());
-  }
-  if (auto Err = llvm::handleErrors(
-          verifyTarget(It->second, Rule.targetPart()), [&Rule](StringError &E) {
-            return invalidArgumentError("Failure targeting node" +
-                                        Rule.target() + ": " + E.getMessage());
-          })) {
-    return std::move(Err);
-  }
-  CharSourceRange Target =
-      getTarget(It->second, Rule.targetPart(), *Result.Context);
-  if (Target.isInvalid() ||
-      isOriginMacroBody(*Result.SourceManager, Target.getBegin())) {
-    return Transformation();
+  auto Root = NodesMap.find(RewriteRule::matchedNode());
+  if (Root == NodesMap.end())
+    return unboundNodeError("root id", RewriteRule::matchedNode());
+
+  SourceLocation RootLoc = Root->second.getSourceRange().getBegin();
+  if (RootLoc.isInvalid() ||
+      isOriginMacroBody(*Result.SourceManager, RootLoc))
+    return Group;
+  Group.Anchor = RootLoc;
+
+  for (const auto& Change : Rule.changes()) {
+    auto It = NodesMap.find(Change.target());
+    if (It == NodesMap.end()) {
+      return unboundNodeError("Change.target()", Change.target());
+    }
+    if (auto Err = llvm::handleErrors(
+            verifyTarget(It->second, Change.part()), [&Change](StringError &E) {
+              return invalidArgumentError("Failure targeting node" +
+                                          Change.target() + ": " +
+                                          E.getMessage());
+            })) {
+      return std::move(Err);
+    }
+    CharSourceRange Target =
+        getTarget(It->second, Change.part(), *Result.Context);
+    if (Target.isInvalid() ||
+        isOriginMacroBody(*Result.SourceManager, Target.getBegin())) {
+      Group.Anchor = SourceLocation();
+      return Group;
+    }
+    auto ReplacementOrErr = Change.replacement().eval(Result);
+    if (auto Err = ReplacementOrErr.takeError())
+      return std::move(Err);
+
+    Group.Transformations.emplace_back(Target, std::move(*ReplacementOrErr));
   }
 
-  if (auto ReplacementOrErr = Rule.replacement().eval(Result)) {
-    return Transformation{Target, std::move(*ReplacementOrErr)};
-  } else {
-    return ReplacementOrErr.takeError();
-  }
+  return Group;
 }
 } // namespace internal
 
-RewriteRule::RewriteRule()
-    : Matcher(stmt()), Target(RootId), TargetPart(NodePart::kNode) {}
+TextChange::TextChange(StringRef Target, NodePart Part)
+    : Target(Target.str()), Part(Part) {}
+
+TextChange &&TextChange::to(Stencil S) && {
+  Replacement = std::move(S);
+  return std::move(*this);
+}
 
 constexpr char RewriteRule::RootId[];
 
@@ -191,23 +229,31 @@ RewriteRule::where(std::function<bool(const MatchResult &Result)> FilterFn) & {
   return *this;
 }
 
-RewriteRule &RewriteRule::change(const NodeId &TargetId, NodePart Part) & {
-  Target = std::string(TargetId.id());
-  TargetPart = Part;
+RewriteRule &RewriteRule::addHeader(StringRef Header) & {
+  AddedHeaders.push_back(Header.str());
   return *this;
 }
 
-RewriteRule &RewriteRule::replaceWith(Stencil S) & {
-  Replacement = std::move(S);
+RewriteRule &RewriteRule::removeHeader(StringRef Header) & {
+  RemovedHeaders.push_back(Header.str());
+  return *this;
+}
+
+RewriteRule &RewriteRule::apply(TextChange Change) & {
+  Changes.push_back(std::move(Change));
+  return *this;
+}
+
+RewriteRule &RewriteRule::applyAll(std::vector<TextChange> CS) & {
+  Changes = std::move(CS);
   return *this;
 }
 
 RewriteRule makeRule(StatementMatcher Matcher, Stencil Replacement,
                      std::string Explanation) {
-  return RewriteRule()
-      .matching(stmt(Matcher))
-      .replaceWith(std::move(Replacement))
-      .explain(std::move(Explanation));
+  return RewriteRule(Matcher).apply(TextChange(RewriteRule::matchedNode())
+                                        .to(std::move(Replacement))
+                                        .because(std::move(Explanation)));
 }
 
 void Transformer::registerMatchers(MatchFinder *MatchFinder) {
@@ -215,29 +261,37 @@ void Transformer::registerMatchers(MatchFinder *MatchFinder) {
 }
 
 void Transformer::run(const MatchResult &Result) {
-  auto ChangeOrErr = internal::transform(Result, Rule);
-  if (auto Err = ChangeOrErr.takeError()) {
+  auto RewritesOrErr = internal::transform(Result, Rule);
+
+  // Validate that result.
+  if (auto Err = RewritesOrErr.takeError()) {
     llvm::errs() << "Rewrite failed: " << llvm::toString(std::move(Err))
                  << "\n";
     return;
   }
-  auto &Change = *ChangeOrErr;
-  auto &Range = Change.Range;
-  if (Range.isInvalid()) {
+  auto &Rewrites = *RewritesOrErr;
+  if (Rewrites.Anchor.isInvalid()) {
     // No rewrite applied (but no error encountered either).
     return;
   }
-  AtomicChange AC(*Result.SourceManager, Range.getBegin());
-  if (auto Err = AC.replace(*Result.SourceManager, Range, Change.Replacement)) {
-    AC.setError(llvm::toString(std::move(Err)));
-  } else {
-    for (const auto &header : Rule.replacement().addedIncludes()) {
+
+  // Convert the result to an AtomicChange.
+  AtomicChange AC(*Result.SourceManager, Rewrites.Anchor);
+  for (const auto &T : Rewrites.Transformations)
+    if (auto Err = AC.replace(*Result.SourceManager, T.Range, T.Replacement)) {
+      AC.setError(llvm::toString(std::move(Err)));
+      break;
+    }
+
+  if (!AC.hasError()) {
+    for (const auto &header : Rule.addedHeaders()) {
       AC.addHeader(header);
     }
-    for (const auto &header : Rule.replacement().removedIncludes()) {
+    for (const auto &header : Rule.removedHeaders()) {
       AC.removeHeader(header);
     }
   }
+
   Consumer(AC);
 }
 
@@ -266,22 +320,31 @@ maybeTransform(const RewriteRule &Rule,
                const clang::ast_type_traits::DynTypedNode &Node,
                clang::ASTContext *Context) {
   auto Matches = match(Rule.matcher(), Node, Context);
-  if (Matches.empty()) {
+  if (Matches.empty())
     return llvm::None;
-  }
-  if (Matches.size() > 1) {
+
+  if (Rule.changes().size() != 1)
+    return invalidArgumentError("rule has multiple changes, which is not "
+                                "allowed when transforming a single node");
+  if (Rule.changes()[0].target() != RewriteRule::matchedNode() ||
+      Rule.changes()[0].part() != NodePart::kNode)
+    return invalidArgumentError("rule subselects on node, which is not allowed "
+                                "when transforming a single node");
+  if (Matches.size() > 1)
     return invalidArgumentError("rule is ambiguous");
-  }
-  auto ChangeOrErr =
+
+  auto RewritesOrErr =
       internal::transform(MatchResult(Matches[0], Context), Rule);
-  if (auto Err = ChangeOrErr.takeError()) {
+  if (auto Err = RewritesOrErr.takeError()) {
     return std::move(Err);
   }
-  auto &Change = *ChangeOrErr;
-  if (Change.Range.isInvalid()) {
+  auto &Rewrites = *RewritesOrErr;
+  if (Rewrites.Anchor.isInvalid()) {
     return llvm::None;
   }
-  return Change.Replacement;
+  assert(Rewrites.Transformations.size() == 1 &&
+         "expected one transformation result to match the one requested");
+  return Rewrites.Transformations[0].Replacement;
 }
 } // namespace tooling
 } // namespace clang
