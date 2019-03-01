@@ -239,7 +239,7 @@ Error evalData(const NodeRefData &Data, const MatchFinder::MatchResult &Match,
   if (auto Err = NodeOrErr.takeError()) {
     return Err;
   }
-  *Result += fixit::getSourceSmart(NodeOrErr.get(), *Match.Context);
+  *Result += fixit::getSourceAuto(NodeOrErr.get(), *Match.Context);
   return Error::success();
 }
 
@@ -338,7 +338,7 @@ Error evalData(const StatementsOpData &Data,
     return Error::success();
   }
   if (const auto *S = Match.Nodes.getNodeAs<Stmt>(Data.Id)) {
-    *Result += fixit::getSourceSmart(*S, *Match.Context);
+    *Result += fixit::getSourceAuto(*S, *Match.Context);
     return Error::success();
   }
   return llvm::make_error<StringError>(errc::invalid_argument,
