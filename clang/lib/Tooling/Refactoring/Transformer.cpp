@@ -7,12 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Tooling/Refactoring/Transformer.h"
-
-#include <deque>
-#include <string>
-#include <utility>
-#include <vector>
-
 #include "clang/AST/Expr.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
@@ -26,6 +20,10 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
+#include <deque>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace clang {
 namespace tooling {
@@ -59,7 +57,7 @@ static llvm::Error invalidArgumentError(llvm::Twine Message) {
 }
 
 static llvm::Error unboundNodeError(StringRef Role, StringRef Id) {
-  return invalidArgumentError(Role + " (" + Id + ") references unbound node");
+  return invalidArgumentError(Role + " (=" + Id + ") references unbound node");
 }
 
 static llvm::Error typeError(llvm::Twine Message,
@@ -78,35 +76,31 @@ static llvm::Error missingPropertyError(llvm::Twine Description,
 static Error verifyTarget(const clang::ast_type_traits::DynTypedNode &Node,
                           NodePart TargetPart) {
   switch (TargetPart) {
-  case NodePart::kNode:
+  case NodePart::Node:
     return Error::success();
-  case NodePart::kMember:
-    if (Node.get<clang::MemberExpr>() != nullptr) {
+  case NodePart::Member:
+    if (Node.get<clang::MemberExpr>() != nullptr)
       return Error::success();
-    }
-    return typeError("NodePart::kMember applied to non-MemberExpr",
+    return typeError("NodePart::Member applied to non-MemberExpr",
                      Node.getNodeKind());
-  case NodePart::kName:
+  case NodePart::Name:
     if (const auto *D = Node.get<clang::NamedDecl>()) {
-      if (D->getDeclName().isIdentifier()) {
+      if (D->getDeclName().isIdentifier())
         return Error::success();
-      }
-      return missingPropertyError("NodePart::kName", "identifier");
+      return missingPropertyError("NodePart::Name", "identifier");
     }
     if (const auto *E = Node.get<clang::DeclRefExpr>()) {
-      if (E->getNameInfo().getName().isIdentifier()) {
+      if (E->getNameInfo().getName().isIdentifier())
         return Error::success();
-      }
-      return missingPropertyError("NodePart::kName", "identifier");
+      return missingPropertyError("NodePart::Name", "identifier");
     }
     if (const auto *I = Node.get<clang::CXXCtorInitializer>()) {
-      if (I->isMemberInitializer()) {
+      if (I->isMemberInitializer())
         return Error::success();
-      }
-      return missingPropertyError("NodePart::kName", "member initializer");
+      return missingPropertyError("NodePart::Name", "member initializer");
     }
     return typeError(
-        "NodePart::kName applied to neither DeclRefExpr, NamedDecl nor "
+        "NodePart::Name applied to neither DeclRefExpr, NamedDecl nor "
         "CXXCtorInitializer",
         Node.getNodeKind());
   }
@@ -119,12 +113,12 @@ getTarget(const clang::ast_type_traits::DynTypedNode &Node, NodePart TargetPart,
           ASTContext &Context) {
   SourceLocation TokenLoc;
   switch (TargetPart) {
-  case NodePart::kNode:
-    return fixit::getSourceRangeSmart(Node, Context);
-  case NodePart::kMember:
+  case NodePart::Node:
+    return fixit::getSourceRangeAuto(Node, Context);
+  case NodePart::Member:
     TokenLoc = Node.get<clang::MemberExpr>()->getMemberLoc();
     break;
-  case NodePart::kName:
+  case NodePart::Name:
     if (const auto *D = Node.get<clang::NamedDecl>()) {
       TokenLoc = D->getLocation();
       break;
@@ -138,7 +132,7 @@ getTarget(const clang::ast_type_traits::DynTypedNode &Node, NodePart TargetPart,
       break;
     }
     // This should be unreachable if the target was already verified.
-    llvm_unreachable("NodePart::kName applied to neither NamedDecl nor "
+    llvm_unreachable("NodePart::Name applied to neither NamedDecl nor "
                      "CXXCtorInitializer");
   }
   return CharSourceRange::getTokenRange(TokenLoc, TokenLoc);
@@ -149,15 +143,13 @@ Expected<Transformation> transform(const MatchResult &Result,
                                    const RewriteRule &Rule) {
   // Ignore results in failing TUs or those rejected by the where clause.
   if (Result.Context->getDiagnostics().hasErrorOccurred() ||
-      !Rule.filter().matches(Result)) {
+      !Rule.filter().matches(Result))
     return Transformation();
-  }
 
   auto &NodesMap = Result.Nodes.getMap();
   auto It = NodesMap.find(Rule.target());
-  if (It == NodesMap.end()) {
-    return unboundNodeError("rule.target()", Rule.target());
-  }
+  if (It == NodesMap.end())
+    return unboundNodeError("rule.target", Rule.target());
   if (auto Err = llvm::handleErrors(
           verifyTarget(It->second, Rule.targetPart()), [&Rule](StringError &E) {
             return invalidArgumentError("Failure targeting node" +
@@ -168,20 +160,15 @@ Expected<Transformation> transform(const MatchResult &Result,
   CharSourceRange Target =
       getTarget(It->second, Rule.targetPart(), *Result.Context);
   if (Target.isInvalid() ||
-      isOriginMacroBody(*Result.SourceManager, Target.getBegin())) {
+      isOriginMacroBody(*Result.SourceManager, Target.getBegin()))
     return Transformation();
-  }
 
-  if (auto ReplacementOrErr = Rule.replacement(Result)) {
-    return Transformation{Target, std::move(*ReplacementOrErr)};
-  } else {
-    return ReplacementOrErr.takeError();
-  }
+  auto ReplacementOrErr = Rule.replacement(Result);
+  if (auto Err = ReplacementOrErr.takeError())
+    return std::move(Err);
+  return Transformation{Target, std::move(*ReplacementOrErr)};
 }
 } // namespace internal
-
-RewriteRule::RewriteRule()
-    : Matcher(stmt()), Target(RootId), TargetPart(NodePart::kNode) {}
 
 constexpr char RewriteRule::RootId[];
 
@@ -197,13 +184,13 @@ RewriteRule &RewriteRule::change(const NodeId &TargetId, NodePart Part) & {
   return *this;
 }
 
-RewriteRule &RewriteRule::replaceWith(TextGenerator Gen) & {
-  Replacement = std::move(Gen);
+RewriteRule &RewriteRule::replaceWith(TextGenerator TG) & {
+  Replacement = std::move(TG);
   return *this;
 }
 
-RewriteRule &RewriteRule::explain(TextGenerator Gen) & {
-  Explanation = std::move(Gen);
+RewriteRule &RewriteRule::because(TextGenerator TG) & {
+  Explanation = std::move(TG);
   return *this;
 }
 
@@ -211,11 +198,10 @@ RewriteRule &RewriteRule::explain(TextGenerator Gen) & {
 // an extra copy needed to intialize the captured lambda variable.  After C++14,
 // we can use intializers to do this properly.
 RewriteRule makeRule(StatementMatcher Matcher, TextGenerator Replacement,
-                     const std::string& Explanation) {
-  return RewriteRule()
-      .matching(stmt(Matcher))
+                     const std::string &Explanation) {
+  return RewriteRule(Matcher)
       .replaceWith(std::move(Replacement))
-      .explain([Explanation](const MatchResult &) { return Explanation; });
+      .because([Explanation](const MatchResult &) { return Explanation; });
 }
 
 void Transformer::registerMatchers(MatchFinder *MatchFinder) {

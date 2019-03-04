@@ -149,8 +149,7 @@ RewriteRule ruleStrlenSize() {
                                   on(bind(StringExpr, expr(hasType(isOrPointsTo(
                                                           StringType))))),
                                   callee(cxxMethodDecl(hasName("c_str")))))),
-      text("REPLACED"),
-      "Use size() method directly on string.");
+      text("REPLACED"), "Use size() method directly on string.");
 }
 
 TEST_F(TransformerTest, StrlenSize) {
@@ -189,10 +188,8 @@ TEST_F(TransformerTest, StrlenSizeMacro) {
 // Use the lvalue-ref overloads of the RewriteRule builder methods.
 TEST_F(TransformerTest, LvalueRefOverloads) {
   StmtId E;
-  RewriteRule Rule;
-  Rule.matching(ifStmt(hasElse(E.bind())))
-      .change(E)
-      .replaceWith(text("bar();"));
+  RewriteRule Rule(ifStmt(hasElse(E.bind())));
+  Rule.change(E).replaceWith(text("bar();"));
 
   std::string Input = R"cc(
     void foo() {
@@ -220,14 +217,14 @@ TEST_F(TransformerTest, LvalueRefOverloads) {
 TEST_F(TransformerTest, Flag) {
   ExprId Flag;
   auto Rule =
-      RewriteRule()
-          .matching(cxxMemberCallExpr(
+      RewriteRule(
+          cxxMemberCallExpr(
               on(expr(Flag.bind(), hasType(cxxRecordDecl(hasName(
                                        "proto::ProtoCommandLineFlag"))))),
               unless(callee(cxxMethodDecl(hasName("GetProto"))))))
           .change(Flag)
           .replaceWith(text("EXPR"))
-          .explain(text("Use GetProto() to access proto fields."));
+          .because(text("Use GetProto() to access proto fields."));
 
   std::string Input = R"cc(
     proto::ProtoCommandLineFlag flag;
@@ -247,10 +244,9 @@ TEST_F(TransformerTest, Flag) {
 
 TEST_F(TransformerTest, NodePartNameNamedDecl) {
   DeclId Fun;
-  auto Rule = RewriteRule()
-      .matching(functionDecl(hasName("bad"), Fun.bind()))
-      .change(Fun, NodePart::kName)
-      .replaceWith(text("good"));
+  auto Rule = RewriteRule(functionDecl(hasName("bad"), Fun.bind()))
+                  .change(Fun, NodePart::Name)
+                  .replaceWith(text("good"));
 
   std::string Input = R"cc(
     int bad(int x);
@@ -284,9 +280,8 @@ TEST_F(TransformerTest, NodePartNameDeclRef) {
 
   ExprId Ref;
   Transformer T(
-      RewriteRule()
-          .matching(declRefExpr(to(functionDecl(hasName("bad"))), Ref.bind()))
-          .change(Ref, NodePart::kName)
+      RewriteRule(declRefExpr(to(functionDecl(hasName("bad"))), Ref.bind()))
+          .change(Ref, NodePart::Name)
           .replaceWith(text("good")),
       changeRecorder());
   T.registerMatchers(&MatchFinder);
@@ -304,9 +299,8 @@ TEST_F(TransformerTest, NodePartNameDeclRefFailure) {
   )cc";
 
   ExprId Ref;
-  Transformer T(RewriteRule()
-                    .matching(declRefExpr(to(functionDecl()), Ref.bind()))
-                    .change(Ref, NodePart::kName)
+  Transformer T(RewriteRule(declRefExpr(to(functionDecl()), Ref.bind()))
+                    .change(Ref, NodePart::Name)
                     .replaceWith(text("good")),
                 changeRecorder());
   T.registerMatchers(&MatchFinder);
@@ -315,9 +309,8 @@ TEST_F(TransformerTest, NodePartNameDeclRefFailure) {
 
 TEST_F(TransformerTest, NodePartMember) {
   ExprId E;
-  auto Rule = RewriteRule()
-                  .matching(memberExpr(member(hasName("bad")), E.bind()))
-                  .change(E, NodePart::kMember)
+  auto Rule = RewriteRule(memberExpr(member(hasName("bad")), E.bind()))
+                  .change(E, NodePart::Member)
                   .replaceWith(text("good"));
 
   std::string Input = R"cc(
@@ -348,9 +341,8 @@ TEST_F(TransformerTest, NodePartMember) {
 // the same identifier.
 RewriteRule ruleDuplicateArgs() {
   ExprId Arg0, Arg1;
-  return RewriteRule()
-      .matching(callExpr(argumentCountIs(2), hasArgument(0, Arg0.bind()),
-                         hasArgument(1, Arg1.bind())))
+  return RewriteRule(callExpr(argumentCountIs(2), hasArgument(0, Arg0.bind()),
+                              hasArgument(1, Arg1.bind())))
       .where([Arg0, Arg1](
                  const clang::ast_matchers::MatchFinder::MatchResult &result) {
         auto *Ref0 = Arg0.getNodeAs<clang::DeclRefExpr>(result);
