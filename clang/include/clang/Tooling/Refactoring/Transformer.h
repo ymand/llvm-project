@@ -107,6 +107,8 @@ private:
 enum class NodePart {
   // The node itself.
   kNode,
+  kBefore,
+  kAfter,
   // Given a MemberExpr, selects the member's token.
   kMember,
   // Given a NamedDecl or CxxCtorInitializer, select that token of the relevant
@@ -114,6 +116,8 @@ enum class NodePart {
   kName,
 };
 
+using TextGenerator = std::function<llvm::Expected<std::string>(
+    const ast_matchers::MatchFinder::MatchResult &)>;
 
 // Description of a textual change, based on an AST node. Includes: an id for
 // the (bound) node, (optionally) a selector for a portion of the node (that is
@@ -132,9 +136,22 @@ class TextChange {
   explicit TextChange(const NodeId &Target, NodePart Part = NodePart::kNode)
       : TextChange(Target.id(), Part) {}
 
-  // Sets the replacement to `S`.
-  void setReplacement(Stencil S) { Replacement = std::move(S); }
-  TextChange &&to(Stencil S) &&;
+  // Sets the replacement to `T`.
+  void setReplacement(TextGenerator T);
+  void setReplacement(const Stencil &S) {
+    return setReplacement(
+        [S](const ast_matchers::MatchFinder::MatchResult &Match) {
+          return S.eval(Match);
+        });
+  }
+
+  TextChange &&to(TextGenerator T) &&;
+  TextChange &&to(const Stencil &S) && {
+    return std::move(*this).to(
+        [S](const ast_matchers::MatchFinder::MatchResult &Match) {
+          return S.eval(Match);
+        });
+  }
 
   template <typename... Ts> void setExplanation(Ts &&... Args) {
     Explanation = Stencil::cat(std::forward<Ts>(Args)...);
@@ -146,15 +163,23 @@ class TextChange {
 
   StringRef target() const { return Target; }
   NodePart part() const { return Part; }
-  const Stencil &replacement() const { return Replacement; }
-  const Stencil &explanation() const { return Explanation; }
+
+  Expected<std::string>
+  replacement(const ast_matchers::MatchFinder::MatchResult &Match) const {
+    return ReplacementGen(Match);
+  }
+
+  Expected<std::string>
+  explanation(const ast_matchers::MatchFinder::MatchResult &Match) const {
+    return Explanation.eval(Match);
+  }
 
  private:
   // The (bound) id of the node whose source will be replaced.  This id should
   // never be the empty string.
   std::string Target;
   NodePart Part;
-  Stencil Replacement;
+  TextGenerator ReplacementGen;
   Stencil Explanation;
 };
 
@@ -364,16 +389,21 @@ private:
 //   for the given node,
 // * if the rewrite does not apply (but no errors encountered), returns `None`.
 // * if there is a failure, returns an `Error`.
-llvm::Expected<llvm::Optional<std::string>>
+llvm::Expected<llvm::SmallVector<std::string, 1>>
 maybeTransform(const RewriteRule &Rule,
                const ast_type_traits::DynTypedNode &Node, ASTContext *Context);
 
 template <typename T>
-llvm::Expected<llvm::Optional<std::string>>
+llvm::Expected<llvm::SmallVector<std::string, 1>>
 maybeTransform(const RewriteRule &Rule, const T &Node, ASTContext *Context) {
   return maybeTransform(Rule, ast_type_traits::DynTypedNode::create(Node),
                         Context);
 }
+
+// TODO:DOC
+// Need better name.
+TextGenerator rewriteNode(std::string Node,
+                          const std::vector<TextChange> &Changes);
 
 // Binds the node described by `matcher` to the given node id.
 template <typename T>
@@ -395,12 +425,7 @@ struct Transformation {
 
 // A group of associated transformations, centered around a particular source
 // location.
-struct TransformationGroup {
-  // A source location with which all the changes are associated.  For a given
-  // file, each location should anchor at most one group of changes.
-  SourceLocation Anchor;
-  llvm::SmallVector<Transformation, 0> Transformations;
-};
+using TransformationGroup = llvm::SmallVector<Transformation, 0>;
 
 // Given a match and rule, tries to generate a transformation for the target of
 // the rule. Fails if the match is not eligible for rewriting or any invariants

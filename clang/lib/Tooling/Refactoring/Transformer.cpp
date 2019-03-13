@@ -42,17 +42,15 @@ using ::llvm::StringRef;
 using MatchResult = MatchFinder::MatchResult;
 } // namespace
 
-static bool isOriginMacroBody(const clang::SourceManager &source_manager,
-                              clang::SourceLocation loc) {
-  while (loc.isMacroID()) {
-    if (source_manager.isMacroBodyExpansion(loc))
-      return true;
-    // Otherwise, it must be in an argument, so we continue searching up the
-    // invocation stack. getImmediateMacroCallerLoc() gives the location of the
-    // argument text, inside the call text.
-    loc = source_manager.getImmediateMacroCallerLoc(loc);
-  }
-  return false;
+// @returns An invalid loc if \p Loc was sourced in a macro definition.
+static SourceLocation getNonMacroBodyLoc(const SourceManager &SM,
+                                         SourceLocation Loc) {
+  // Search up the invocation stack until we find a location that is not the
+  // expansion of a macro argument. getImmediateMacroCallerLoc() gives the
+  // location of the argument text, inside the call text.
+  while (SM.isMacroArgExpansion(Loc))
+    Loc = SM.getImmediateMacroCallerLoc(Loc);
+  return Loc.isMacroID() ? SourceLocation() : Loc;
 }
 
 static llvm::Error invalidArgumentError(llvm::Twine Message) {
@@ -83,6 +81,8 @@ static Error verifyTarget(const clang::ast_type_traits::DynTypedNode &Node,
                           NodePart TargetPart) {
   switch (TargetPart) {
   case NodePart::kNode:
+  case NodePart::kBefore:
+  case NodePart::kAfter:
     return Error::success();
   case NodePart::kMember:
     if (Node.get<clang::MemberExpr>() != nullptr) {
@@ -133,6 +133,12 @@ getTarget(const clang::ast_type_traits::DynTypedNode &Node, NodePart TargetPart,
   switch (TargetPart) {
   case NodePart::kNode:
     return fixit::getSourceRangeAuto(Node, Context);
+  case NodePart::kBefore:
+    return CharSourceRange::getCharRange(Node.getSourceRange().getBegin());
+  case NodePart::kAfter:
+    return CharSourceRange::getCharRange(Lexer::getLocForEndOfToken(
+        Node.getSourceRange().getEnd(), 0, Context.getSourceManager(),
+        Context.getLangOpts()));
   case NodePart::kMember:
     TokenLoc = Node.get<clang::MemberExpr>()->getMemberLoc();
     break;
@@ -159,30 +165,29 @@ getTarget(const clang::ast_type_traits::DynTypedNode &Node, NodePart TargetPart,
   return CharSourceRange::getTokenRange(TokenLoc, TokenLoc);
 }
 
+static CharSourceRange makeMacroFreeRange(CharSourceRange Range,
+                                         const SourceManager &SM,
+                                          const LangOptions &LangOpts) {
+  // FIXME: We should checking that the whole range corresponds to one coherent
+  // segment of non-macro code, which we can do with a check that the whole
+  // range comes from the "expansion" of the same macro argument, as is done
+  // here: clang/lib/Lex/Lexer.cpp:919.
+  SourceLocation Begin = getNonMacroBodyLoc(SM, Range.getBegin());
+  if (Begin.isInvalid())
+    return {};
+  SourceLocation End = getNonMacroBodyLoc(SM, Range.getEnd());
+  if (End.isInvalid())
+    return {};
+  return Lexer::makeFileCharRange(
+      CharSourceRange({Begin, End}, Range.isTokenRange()), SM, LangOpts);
+}
+
 namespace internal {
 Expected<TransformationGroup> transform(const MatchResult &Result,
-                                        const RewriteRule &Rule) {
+                                        llvm::ArrayRef<TextChange> Changes) {
   TransformationGroup Group;
-
-  // Ignore results in failing TUs or those rejected by the where clause.
-  if (Result.Context->getDiagnostics().hasErrorOccurred() ||
-      !Rule.filter().matches(Result)) {
-    return Group;
-  }
-
-  // Get the root as anchor.
   auto &NodesMap = Result.Nodes.getMap();
-  auto Root = NodesMap.find(RewriteRule::matchedNode());
-  if (Root == NodesMap.end())
-    return unboundNodeError("root id", RewriteRule::matchedNode());
-
-  SourceLocation RootLoc = Root->second.getSourceRange().getBegin();
-  if (RootLoc.isInvalid() ||
-      isOriginMacroBody(*Result.SourceManager, RootLoc))
-    return Group;
-  Group.Anchor = RootLoc;
-
-  for (const auto& Change : Rule.changes()) {
+  for (const auto& Change : Changes) {
     auto It = NodesMap.find(Change.target());
     if (It == NodesMap.end()) {
       return unboundNodeError("Change.target()", Change.target());
@@ -195,18 +200,15 @@ Expected<TransformationGroup> transform(const MatchResult &Result,
             })) {
       return std::move(Err);
     }
-    CharSourceRange Target =
-        getTarget(It->second, Change.part(), *Result.Context);
-    if (Target.isInvalid() ||
-        isOriginMacroBody(*Result.SourceManager, Target.getBegin())) {
-      Group.Anchor = SourceLocation();
-      return Group;
-    }
-    auto ReplacementOrErr = Change.replacement().eval(Result);
+    CharSourceRange TargetRange = makeMacroFreeRange(
+        getTarget(It->second, Change.part(), *Result.Context),
+        *Result.SourceManager, Result.Context->getLangOpts());
+    if (TargetRange.isInvalid())
+      return TransformationGroup();
+    auto ReplacementOrErr = Change.replacement(Result);
     if (auto Err = ReplacementOrErr.takeError())
       return std::move(Err);
-
-    Group.Transformations.emplace_back(Target, std::move(*ReplacementOrErr));
+    Group.emplace_back(TargetRange, std::move(*ReplacementOrErr));
   }
 
   return Group;
@@ -216,8 +218,12 @@ Expected<TransformationGroup> transform(const MatchResult &Result,
 TextChange::TextChange(StringRef Target, NodePart Part)
     : Target(Target.str()), Part(Part) {}
 
-TextChange &&TextChange::to(Stencil S) && {
-  Replacement = std::move(S);
+void TextChange::setReplacement(TextGenerator T) {
+  ReplacementGen = std::move(T);
+}
+
+TextChange &&TextChange::to(TextGenerator T) && {
+  ReplacementGen = std::move(T);
   return std::move(*this);
 }
 
@@ -321,8 +327,8 @@ RewriteRuleSet::constructForOp(DynTypedMatcher::VariadicOperator Op,
   return RewriteRuleSet(std::move(M), std::move(Rules));
 }
 
-const RewriteRule &RewriteRuleSet::findSelectedRule(
-    const ast_matchers::MatchFinder::MatchResult &Result) const {
+const RewriteRule &
+RewriteRuleSet::findSelectedRule(const MatchResult &Result) const {
   if (Rules.size() == 1) return Rules[0];
 
   auto &NodesMap = Result.Nodes.getMap();
@@ -339,26 +345,49 @@ void Transformer::registerMatchers(MatchFinder *MatchFinder) {
   MatchFinder->addDynamicMatcher(Rules.matcher(), this);
 }
 
-void Transformer::run(const MatchResult &Result) {
-  const auto& Rule = Rules.findSelectedRule(Result);
-  auto RewritesOrErr = internal::transform(Result, Rule);
+static bool isInsertion(const internal::Transformation& T) {
+  return T.Range.isCharRange() && T.Range.getBegin() == T.Range.getEnd();
+}
 
-  // Validate that result.
+void Transformer::run(const MatchResult &Result) {
+    // Ignore results in failing TUs.
+  if (Result.Context->getDiagnostics().hasErrorOccurred())
+    return;
+
+  // Verify the existence and validity of the AST node that roots this change.
+  auto &NodesMap = Result.Nodes.getMap();
+  auto Root = NodesMap.find(RewriteRule::matchedNode());
+  if (Root == NodesMap.end()) {
+    llvm::errs() << "Rewrite failed: missing root node.\n";
+    return;
+  }
+
+  const auto& Rule = Rules.findSelectedRule(Result);
+    // Ignore results rejected by the where clause.
+  if (!Rule.filter().matches(Result))
+    return;
+  auto RewritesOrErr = internal::transform(Result, Rule.changes());
   if (auto Err = RewritesOrErr.takeError()) {
     llvm::errs() << "Rewrite failed: " << llvm::toString(std::move(Err))
                  << "\n";
     return;
   }
   auto &Rewrites = *RewritesOrErr;
-  if (Rewrites.Anchor.isInvalid()) {
+  if (Rewrites.empty())
     // No rewrite applied (but no error encountered either).
     return;
-  }
 
   // Convert the result to an AtomicChange.
-  AtomicChange AC(*Result.SourceManager, Rewrites.Anchor);
-  for (const auto &T : Rewrites.Transformations)
-    if (auto Err = AC.replace(*Result.SourceManager, T.Range, T.Replacement)) {
+  SourceLocation RootLoc = Root->second.getSourceRange().getBegin();
+  if (RootLoc.isInvalid())
+    return;
+  AtomicChange AC(*Result.SourceManager, RootLoc);
+  for (const auto &T : Rewrites)
+    if (auto Err =
+            isInsertion(T)
+                ? AC.insert(*Result.SourceManager, T.Range.getBegin(),
+                            T.Replacement)
+                : AC.replace(*Result.SourceManager, T.Range, T.Replacement)) {
       AC.setError(llvm::toString(std::move(Err)));
       break;
     }
@@ -395,36 +424,107 @@ match(const DynTypedMatcher &Matcher,
   return std::move(Callback.Nodes);
 }
 
-Expected<Optional<std::string>>
+static Expected<Optional<std::string>>
+maybeTransformImpl(llvm::ArrayRef<TextChange> Changes,
+                   const CharSourceRange &Range, StringRef Code,
+                   const MatchResult &Result) {
+  auto RewritesOrErr = internal::transform(Result, Changes);
+  if (auto Err = RewritesOrErr.takeError())
+    return std::move(Err);
+
+  auto &Rewrites = *RewritesOrErr;
+  if (Rewrites.empty())
+    return llvm::None;
+
+  const SourceLocation &Begin = Range.getBegin();
+  const SourceLocation &End = Range.getEnd();
+
+  SourceManager &SM = *Result.SourceManager;
+  Replacements RS;
+  for (const auto &T : Rewrites) {
+    // All of the changes must occur within the range of the node.  We assume
+    // that both ranges are well formed char ranges, with Begin <= End.
+    if ((T.Range.getBegin() != Begin &&
+         !SM.isBeforeInTranslationUnit(Begin, T.Range.getBegin())) ||
+        (T.Range.getEnd() != End &&
+         !SM.isBeforeInTranslationUnit(T.Range.getEnd(), End)))
+      return invalidArgumentError("rule changes source outside of target node");
+
+    if (auto Err = RS.add(Replacement(SM, T.Range, T.Replacement)))
+      return std::move(Err);
+  }
+
+  auto NewCodeOrErr = applyAllReplacements(Code, RS);
+  if (auto Err = NewCodeOrErr.takeError()) {
+    return std::move(Err);
+  }
+  // FIXME: optimization: move this calculation to callers, since it is fixed
+  // for a given Range.
+  unsigned BeginOffset = SM.getDecomposedLoc(Range.getBegin()).second;
+  // We need to shift the end point to account for changes, but the beginning
+  // remains unchanged.
+  unsigned EndOffset =
+      RS.getShiftedCodePosition(SM.getDecomposedLoc(Range.getEnd()).second);
+  return NewCodeOrErr->substr(BeginOffset, EndOffset - BeginOffset);
+}
+
+TextGenerator rewriteNode(std::string Node,
+                          const std::vector<TextChange> &Changes) {
+  return [=](const ast_matchers::MatchFinder::MatchResult &Result)
+             -> Expected<std::string> {
+    SourceManager &SM = *Result.SourceManager;
+
+    auto &NodesMap = Result.Nodes.getMap();
+    auto It = NodesMap.find(Node);
+    if (It == NodesMap.end())
+      return unboundNodeError("Node", Node);
+    CharSourceRange Range = makeMacroFreeRange(
+        CharSourceRange::getTokenRange(It->second.getSourceRange()), SM,
+        Result.Context->getLangOpts());
+    if (Range.isInvalid())
+      return invalidArgumentError("Bad range for node");
+
+    StringRef Code = SM.getBufferData(SM.getFileID(Range.getBegin()));
+    auto TOrErr = maybeTransformImpl(Changes, Range, Code, Result);
+    if (auto Err = TOrErr.takeError())
+      return std::move(Err);
+    auto &T = *TOrErr;
+    if (!T)
+      return invalidArgumentError("Code not eligible for replacement");
+    return *T;
+  };
+}
+
+Expected<llvm::SmallVector<std::string, 1>>
 maybeTransform(const RewriteRule &Rule,
                const clang::ast_type_traits::DynTypedNode &Node,
                clang::ASTContext *Context) {
+  llvm::SmallVector<std::string, 1> Outputs;
+
+  SourceManager &SM = Context->getSourceManager();
+  auto Range =
+      makeMacroFreeRange(CharSourceRange::getTokenRange(Node.getSourceRange()),
+                         SM, Context->getLangOpts());
+  if (Range.isInvalid())
+    return Outputs;
+  StringRef Code = SM.getBufferData(SM.getFileID(Range.getBegin()));
+
   auto Matches = match(Rule.matcher(), Node, Context);
-  if (Matches.empty())
-    return llvm::None;
-
-  if (Rule.changes().size() != 1)
-    return invalidArgumentError("rule has multiple changes, which is not "
-                                "allowed when transforming a single node");
-  if (Rule.changes()[0].target() != RewriteRule::matchedNode() ||
-      Rule.changes()[0].part() != NodePart::kNode)
-    return invalidArgumentError("rule subselects on node, which is not allowed "
-                                "when transforming a single node");
-  if (Matches.size() > 1)
-    return invalidArgumentError("rule is ambiguous");
-
-  auto RewritesOrErr =
-      internal::transform(MatchResult(Matches[0], Context), Rule);
-  if (auto Err = RewritesOrErr.takeError()) {
-    return std::move(Err);
+  for (const auto &Match : Matches) {
+    MatchResult Result(Match, Context);
+    // Ignore results rejected by the where clause.
+    if (!Rule.filter().matches(Result))
+      continue;
+    auto TOrErr = maybeTransformImpl(Rule.changes(), Range, Code,
+                                     Result);
+    if (auto Err = TOrErr.takeError()) {
+      return std::move(Err);
+    }
+    auto &T = *TOrErr;
+    if (T)
+      Outputs.push_back(std::move(*T));
   }
-  auto &Rewrites = *RewritesOrErr;
-  if (Rewrites.Anchor.isInvalid()) {
-    return llvm::None;
-  }
-  assert(Rewrites.Transformations.size() == 1 &&
-         "expected one transformation result to match the one requested");
-  return Rewrites.Transformations[0].Replacement;
+  return std::move(Outputs);
 }
 } // namespace tooling
 } // namespace clang
