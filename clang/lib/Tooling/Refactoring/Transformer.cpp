@@ -81,6 +81,7 @@ static Error verifyTarget(const clang::ast_type_traits::DynTypedNode &Node,
                           NodePart TargetPart) {
   switch (TargetPart) {
   case NodePart::kNode:
+  case NodePart::kExpansion:
   case NodePart::kBefore:
   case NodePart::kAfter:
     return Error::success();
@@ -133,6 +134,8 @@ getTarget(const clang::ast_type_traits::DynTypedNode &Node, NodePart TargetPart,
   switch (TargetPart) {
   case NodePart::kNode:
     return fixit::getSourceRangeAuto(Node, Context);
+  case NodePart::kExpansion:
+    return Context.getSourceManager().getExpansionRange(Node.getSourceRange());
   case NodePart::kBefore:
     return CharSourceRange::getCharRange(Node.getSourceRange().getBegin());
   case NodePart::kAfter:
@@ -372,22 +375,25 @@ void Transformer::run(const MatchResult &Result) {
                  << "\n";
     return;
   }
+  SourceLocation RootLoc = Result.SourceManager->getExpansionLoc(
+      Root->second.getSourceRange().getBegin());
   auto &Rewrites = *RewritesOrErr;
-  if (Rewrites.empty())
+  if (Rewrites.empty()) {
     // No rewrite applied (but no error encountered either).
+    RootLoc.print(llvm::errs() << "note: skipping match at loc ",
+                  *Result.SourceManager);
+    llvm::errs() << "\n";
     return;
-
+  }
   // Convert the result to an AtomicChange.
-  SourceLocation RootLoc = Root->second.getSourceRange().getBegin();
   if (RootLoc.isInvalid())
     return;
   AtomicChange AC(*Result.SourceManager, RootLoc);
   for (const auto &T : Rewrites)
-    if (auto Err =
-            isInsertion(T)
-                ? AC.insert(*Result.SourceManager, T.Range.getBegin(),
-                            T.Replacement)
-                : AC.replace(*Result.SourceManager, T.Range, T.Replacement)) {
+    if (auto Err = isInsertion(T) ? AC.insert(*Result.SourceManager,
+                                              T.Range.getBegin(), T.Replacement)
+                                  : AC.replace(*Result.SourceManager, T.Range,
+                                               T.Replacement)) {
       AC.setError(llvm::toString(std::move(Err)));
       break;
     }

@@ -102,11 +102,11 @@ private:
 // Selects the part of the AST node to replace.  We support this to work around
 // the fact that the AST does not differentiate various syntactic elements into
 // their own nodes, so users can specify them relative to a node, instead.
-//
-// TODO(yitzhakm): Add tests for kMember and kName.
 enum class NodePart {
   // The node itself.
   kNode,
+  // The surrounding expansion, if any.
+  kExpansion,
   kBefore,
   kAfter,
   // Given a MemberExpr, selects the member's token.
