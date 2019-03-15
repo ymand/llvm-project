@@ -536,6 +536,25 @@ TEST_F(TransformerTest, NodePartMember) {
   compareSnippets(Expected, rewrite(Input));
 }
 
+TEST_F(TransformerTest, NodePartExpansion) {
+  DeclId Fun;
+  auto Rule = RewriteRule(functionDecl(hasName("bad"), Fun.bind()))
+                  .apply(TextChange(Fun, NodePart::kExpansion).to(goodText()));
+
+  std::string Input = R"cc(
+#define BADDECL(E) int bad(int x) { return E; }
+    BADDECL(x * x)
+  )cc";
+  std::string Expected = R"cc(
+#define BADDECL(E) int bad(int x) { return E; }
+    good
+  )cc";
+
+  Transformer T(Rule, changeRecorder());
+  T.registerMatchers(&MatchFinder);
+  compareSnippets(Expected, rewrite(Input));
+}
+
 // Tests the MultiTransformer class and, generally, the combination of multiple
 // rules.
 TEST_F(TransformerTest, MultiRule) {
@@ -727,7 +746,9 @@ TEST_F(TransformerTest, FilterFailed) {
   compareSnippets(Input, rewrite(Input));
 }
 
-TEST_F(TransformerTest, NoTransformationInMacro) {
+// Verifies that no transformation is applied even when matching text is the
+// complete expansion.
+TEST_F(TransformerTest, NoTransformationInMacroFull) {
   std::string Input = R"cc(
 #define MACRO(str) strlen((str).c_str())
     int f(string s) { return MACRO(s); })cc";
@@ -735,6 +756,31 @@ TEST_F(TransformerTest, NoTransformationInMacro) {
   Transformer T(ruleStrlenSizeAny(), changeRecorder());
   T.registerMatchers(&MatchFinder);
   // The macro should be ignored.
+  compareSnippets(Input, rewrite(Input));
+}
+
+// Verifies that no transformation is applied when matching text is part of the
+// expansion.
+TEST_F(TransformerTest, NoTransformationInMacroPartial) {
+  std::string Input = R"cc(
+#define MACRO(str) strlen((str).c_str()) + 3
+    int f(string s) { return MACRO(s); })cc";
+
+  Transformer T(ruleStrlenSizeAny(), changeRecorder());
+  T.registerMatchers(&MatchFinder);
+  // The macro should be ignored.
+  compareSnippets(Input, rewrite(Input));
+}
+
+// Verifies that a macro is not replaced when it's a part of a match.
+TEST_F(TransformerTest, NoTransformationInMacroForPart) {
+  std::string Input = R"cc(
+#define BADNAME bad
+    int BADNAME(float* x);
+  )cc";
+
+  Transformer T(ruleChangeFunctionName(), changeRecorder());
+  T.registerMatchers(&MatchFinder);
   compareSnippets(Input, rewrite(Input));
 }
 
