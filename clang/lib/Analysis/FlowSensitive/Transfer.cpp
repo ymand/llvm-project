@@ -28,7 +28,6 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/OperatorKinds.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/Debug.h"
 #include <assert.h>
 #include <cassert>
 
@@ -48,6 +47,7 @@ const Environment *StmtToEnvMap::getEnvironment(const Stmt &S) const {
   return &State->Env;
 }
 
+#ifdef SAT_BOOL
 static BoolValue &evaluateBooleanEquality(const Expr &LHS, const Expr &RHS,
                                           Environment &Env) {
   Value *LHSValue = Env.getValue(LHS);
@@ -62,6 +62,18 @@ static BoolValue &evaluateBooleanEquality(const Expr &LHS, const Expr &RHS,
 
   return Env.makeAtomicBoolValue();
 }
+#else
+static BoolValue &evaluateBooleanEquality(const Expr &LHS, const Expr &RHS,
+                                          bool IsEquality, Environment &Env) {
+  Value *LHSValue = Env.getValue(LHS);
+  Value *RHSValue = Env.getValue(RHS);
+
+  if (LHSValue == RHSValue && !isa<TopBoolValue>(LHSValue))
+    return Env.getBoolLiteralValue(IsEquality);
+
+  return Env.makeTopBoolValue();
+}
+#endif
 
 static BoolValue &unpackValue(BoolValue &V, Environment &Env) {
   if (auto *Top = llvm::dyn_cast<TopBoolValue>(&V)) {
@@ -147,6 +159,7 @@ public:
     }
     case BO_LAnd:
     case BO_LOr: {
+#ifdef SAT_BOOL
       BoolValue &LHSVal = getLogicOperatorSubExprValue(*LHS);
       BoolValue &RHSVal = getLogicOperatorSubExprValue(*RHS);
 
@@ -154,13 +167,19 @@ public:
         Env.setValue(*S, Env.makeAnd(LHSVal, RHSVal));
       else
         Env.setValue(*S, Env.makeOr(LHSVal, RHSVal));
+#endif
       break;
     }
     case BO_NE:
     case BO_EQ: {
+#ifdef SAT_BOOL
       auto &LHSEqRHSValue = evaluateBooleanEquality(*LHS, *RHS, Env);
       Env.setValue(*S, S->getOpcode() == BO_EQ ? LHSEqRHSValue
                                                : Env.makeNot(LHSEqRHSValue));
+#else
+      Env.setValue(*S, evaluateBooleanEquality(*LHS, *RHS,
+                                               S->getOpcode() == BO_EQ, Env));
+#endif
       break;
     }
     case BO_Comma: {
@@ -271,17 +290,27 @@ public:
       else
         // FIXME: If integer modeling is added, then update this code to create
         // the boolean based on the integer model.
+#ifdef SAT_BOOL
         Env.setValue(*S, Env.makeAtomicBoolValue());
+#else
+        Env.setValue(*S, Env.makeTopBoolValue());
+#endif
       break;
     }
 
     case CK_LValueToRValue: {
+#ifdef SAT_BOOL
       // When an L-value is used as an R-value, it may result in sharing, so we
       // need to unpack any nested `Top`s.
       auto *SubExprVal = maybeUnpackLValueExpr(*SubExpr, Env);
+#else
+      auto *Loc = Env.getStorageLocation(*SubExpr);
+      if (Loc == nullptr)
+        break;
+      auto *SubExprVal = Env.getValue(*Loc);
+#endif
       if (SubExprVal == nullptr)
         break;
-
       Env.setValue(*S, *SubExprVal);
       break;
     }
@@ -361,7 +390,16 @@ public:
       if (SubExprVal == nullptr)
         break;
 
+#ifdef SAT_BOOL
       Env.setValue(*S, Env.makeNot(*SubExprVal));
+#else
+      if (SubExprVal == &Env.getBoolLiteralValue(true))
+        Env.setValue(*S, Env.getBoolLiteralValue(false));
+      else if (SubExprVal == &Env.getBoolLiteralValue(false))
+        Env.setValue(*S, Env.getBoolLiteralValue(true));
+      else
+        Env.setValue(*S, Env.makeTopBoolValue());
+#endif
       break;
     }
     default:
@@ -614,6 +652,7 @@ public:
   }
 
   void VisitConditionalOperator(const ConditionalOperator *S) {
+    /*SIMPLE*/ // revisit the comment
     // FIXME: Revisit this once flow conditions are added to the framework. For
     // `a = b ? c : d` we can add `b => a == c && !b => a == d` to the flow
     // condition.

@@ -3425,7 +3425,9 @@ TEST(TransferTest, AssignFromBoolNegation) {
             dyn_cast_or_null<BoolValue>(Env.getValue(*BarDecl));
         ASSERT_THAT(BarVal, NotNull());
         auto &A = Env.arena();
-        EXPECT_EQ(&BarVal->formula(), &A.makeNot(FooVal->formula()));
+        // EXPECT_EQ(&BarVal->formula(), &A.makeNot(FooVal->formula()));
+        EXPECT_TRUE(Env.flowConditionImplies(
+            A.makeEquals(BarVal->formula(), A.makeNot(FooVal->formula()))));
       });
 }
 

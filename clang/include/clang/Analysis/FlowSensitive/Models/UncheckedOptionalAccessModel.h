@@ -54,6 +54,12 @@ public:
 
   void transfer(const CFGElement &Elt, NoopLattice &L, Environment &Env);
 
+#ifndef SAT_BOOL
+  // TODO: use a a ref!
+  void transferBranch(bool Branch, const Stmt *Stmt, NoopLattice &E,
+                      Environment &Env);
+#endif
+
   ComparisonResult compare(QualType Type, const Value &Val1,
                            const Environment &Env1, const Value &Val2,
                            const Environment &Env2) override;

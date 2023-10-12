@@ -17,6 +17,7 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/Stmt.h"
+#include "clang/AST/StmtVisitor.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/ASTMatchers/ASTMatchersMacros.h"
 #include "clang/Analysis/CFG.h"
@@ -26,6 +27,7 @@
 #include "clang/Analysis/FlowSensitive/NoopLattice.h"
 #include "clang/Analysis/FlowSensitive/StorageLocation.h"
 #include "clang/Analysis/FlowSensitive/Value.h"
+#include "clang/Basic/OperatorKinds.h"
 #include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Casting.h"
@@ -917,8 +919,15 @@ llvm::SmallVector<SourceLocation> diagnoseUnwrapCall(const Expr *ObjectExpr,
   if (auto *OptionalVal = getValueBehindPossiblePointer(*ObjectExpr, Env)) {
     auto *Prop = OptionalVal->getProperty("has_value");
     if (auto *HasValueVal = cast_or_null<BoolValue>(Prop)) {
+#ifdef SAT_BOOL
       if (Env.flowConditionImplies(HasValueVal->formula()))
         return {};
+      #else
+      if (auto *AV = llvm::dyn_cast_or_null<AtomicBoolValue>(HasValueVal);
+          AV &&
+          Env.getAtomValue(AV->getAtom()) == &Env.getBoolLiteralValue(true))
+        return {};
+      #endif
     }
   }
 
@@ -989,6 +998,212 @@ ComparisonResult UncheckedOptionalAccessModel::compare(
              ? ComparisonResult::Same
              : ComparisonResult::Different;
 }
+
+#ifndef SAT_BOOL
+namespace {
+using BindingTy = std::optional<std::pair<Atom, bool>>;
+
+class NameVisitor
+    : public ConstStmtVisitor<NameVisitor, BindingTy> {
+public:
+  NameVisitor(Environment &Env) : Env(Env) {}
+
+  BindingTy VisitDeclRefExpr(const DeclRefExpr *S) {
+    if (!isOptionalType(S->getType()))
+      return std::nullopt;
+
+    const ValueDecl *VD = S->getDecl();
+    assert(VD != nullptr);
+
+    // Some `DeclRefExpr`s aren't glvalues, so we can't associate them with a
+    // `StorageLocation`, and there's also no sensible `Value` that we can
+    // assign to them. Examples:
+    // - Non-static member variables
+    // - Non static member functions
+    //   Note: Member operators are an exception to this, but apparently only
+    //   if the `DeclRefExpr` is used within the callee of a
+    //   `CXXOperatorCallExpr`. In other cases, for example when applying the
+    //   address-of operator, the `DeclRefExpr` is a prvalue.
+    if (!S->isGLValue())
+      return std::nullopt;
+
+    // Need to filter by optional type!
+    if (auto *AV = llvm::dyn_cast_or_null<AtomicBoolValue>(
+            getHasValue(Env, Env.getValue(*S))))
+      return std::make_pair(AV->getAtom(), true);
+    return std::nullopt;
+  }
+
+  BindingTy VisitCXXMemberCallExpr(const CXXMemberCallExpr *S) {
+    // llvm::errs() << "Visiting member call expr\n";
+    if (!S->getImplicitObjectArgument()->isGLValue())
+      return std::nullopt;
+
+    // llvm::errs() << "is a GLvalue\n";
+
+    const FunctionDecl *DC = S->getDirectCallee();
+    if (DC == nullptr) return std::nullopt;
+    // llvm::errs() << "Has direct callee\n";
+
+    if (DC->getIdentifier() == nullptr) {
+      if (DC->getDeclName().getNameKind() ==
+            DeclarationName::CXXConversionFunctionName &&
+        DC->getDeclName().getCXXNameType()->isBooleanType()) {
+        // llvm::errs() << "operator bool matched\n";
+        if (auto *AV = llvm::dyn_cast_or_null<AtomicBoolValue>(
+                getHasValue(Env, getValueBehindPossiblePointer(
+                                     *S->getImplicitObjectArgument(), Env)))) {
+          // llvm::errs() << "IsAtomicBool\n";
+          return std::make_pair(AV->getAtom(), true);
+        }
+      }
+      return std::nullopt;
+    }
+    // llvm::errs() << "Name = " << DC->getName() << "\n";
+
+    if (DC->getName() == "operator bool" || DC->getName() == "has_value" ||
+        DC->getName() == "hasValue") {
+      // llvm::errs() << "Name matched\n";
+      if (auto *AV = llvm::dyn_cast_or_null<AtomicBoolValue>(
+              getHasValue(Env, getValueBehindPossiblePointer(
+                  *S->getImplicitObjectArgument(), Env)))) {
+        // llvm::errs() << "IsAtomicBool\n";  //
+        return std::make_pair(AV->getAtom(), true);
+      }
+    }
+    return std::nullopt;
+  }
+
+  BindingTy VisitImplicitCastExpr(const ImplicitCastExpr *S) {
+    const Expr *SubExpr = S->getSubExpr();
+    assert(SubExpr != nullptr);
+
+    switch (S->getCastKind()) {
+    case CK_UserDefinedConversion:
+    case CK_IntegralCast:
+    case CK_NoOp:
+    case CK_LValueToRValue:
+      return Visit(SubExpr);
+
+    case CK_IntegralToBoolean:
+    case CK_UncheckedDerivedToBase:
+    case CK_ConstructorConversion:
+    case CK_NullToPointer:
+    case CK_NullToMemberPointer:
+    case CK_FunctionToPointerDecay:
+    case CK_BuiltinFnToFnPtr:
+      return std::nullopt;
+
+    default:
+      return std::nullopt;
+    }
+  }
+
+  BindingTy VisitUnaryOperator(const UnaryOperator *S) {
+    const Expr *SubExpr = S->getSubExpr();
+    assert(SubExpr != nullptr);
+
+    switch (S->getOpcode()) {
+    case UO_LNot:
+      if (auto SubExprBinding = Visit(SubExpr)) {
+        SubExprBinding->second = !SubExprBinding->second;
+        return SubExprBinding;
+      }
+      break;
+    default:
+      break;
+    }
+    return std::nullopt;
+  }
+
+  BindingTy VisitCXXOperatorCallExpr(const CXXOperatorCallExpr *S) {
+    if (S->getNumArgs() != 2)
+      return std::nullopt;
+
+    llvm::errs() << "Name: OverloadedBinOp: ";
+    const Expr *LHS = S->getArg(0);
+    assert(LHS != nullptr);
+
+    const Expr *RHS = S->getArg(1);
+    assert(RHS != nullptr);
+
+    switch (S->getOperator()) {
+    case OO_EqualEqual:
+    case OO_ExclaimEqual: {
+      bool Negate = S->getOperator() == OO_ExclaimEqual;
+      if (Negate)
+        llvm::errs() << "NE";
+      else
+        llvm::errs() << "EQ";
+
+      if (auto LHSBinding = Visit(LHS)) {
+        llvm::errs() << ": trying to bind LHS. RHS";
+        // FIXME: handle case of obviously unreachable branch?
+        auto *RHSVal = cast_or_null<BoolValue>(
+            Env.getValue(*RHS)->getProperty("has_value"));
+        if (RHSVal == &Env.getBoolLiteralValue(Negate)) {
+          llvm::errs() << " equals literal " << Negate << "\n";
+          LHSBinding->second = !LHSBinding->second;
+          return LHSBinding;
+        }
+        if (RHSVal == &Env.getBoolLiteralValue(!Negate)) {
+          llvm::errs() << " equals literal " << !Negate << "\n";
+          return LHSBinding;
+        }
+        llvm::errs() << "does not equal literal";
+      }
+      if (auto RHSBinding = Visit(RHS)) {
+        llvm::errs() << ": trying to bind RHS. LHS";
+        // FIXME: handle case of obviously unreachable branch?
+        auto *LHSVal = cast_or_null<BoolValue>(
+            Env.getValue(*LHS)->getProperty("has_value"));
+        if (LHSVal == &Env.getBoolLiteralValue(Negate)) {
+          llvm::errs() << " equals literal " << Negate << "\n";
+          RHSBinding->second = !RHSBinding->second;
+          return RHSBinding;
+        }
+        if (LHSVal == &Env.getBoolLiteralValue(!Negate)) {
+          llvm::errs() << " equals literal " << !Negate << "\n";
+          return RHSBinding;
+        }
+        llvm::errs() << "does not equal literal.\n";
+      }
+      llvm::errs() << ". No bindings found.\n";
+      break;
+    }
+    default:
+      llvm::errs() << "Other\n";
+      break;
+    }
+    return std::nullopt;
+  }
+
+  BindingTy VisitParenExpr(const ParenExpr *S) {
+    // The CFG does not contain `ParenExpr` as top-level statements in basic
+    // blocks, however manual traversal to sub-expressions may encounter them.
+    // Redirect to the sub-expression.
+    auto *SubExpr = S->getSubExpr();
+    assert(SubExpr != nullptr);
+    return Visit(SubExpr);
+  }
+
+ private:
+  Environment &Env;
+};
+} // namespace
+
+void UncheckedOptionalAccessModel::transferBranch(bool Branch, const Stmt *Stmt,
+                                                  NoopLattice &E,
+                                                  Environment &Env) {
+    llvm::errs() << "transfer branch\n";
+  if (auto Binding = NameVisitor(Env).Visit(Stmt)) {
+    auto [Atom, Val] = *Binding;
+    if (!Branch)
+      Val = !Val;
+    Env.setAtomValue(Atom, Env.getBoolLiteralValue(Val));
+  }
+}
+#endif
 
 bool UncheckedOptionalAccessModel::merge(QualType Type, const Value &Val1,
                                          const Environment &Env1,

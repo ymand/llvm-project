@@ -17,6 +17,7 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/Type.h"
 #include "clang/Analysis/FlowSensitive/DataflowLattice.h"
+#include "clang/Analysis/FlowSensitive/Formula.h"
 #include "clang/Analysis/FlowSensitive/Value.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -112,6 +113,7 @@ static Value *mergeDistinctValues(QualType Type, Value &Val1,
   // Join distinct boolean values preserving information about the constraints
   // in the respective path conditions.
   if (isa<BoolValue>(&Val1) && isa<BoolValue>(&Val2)) {
+    /*SIMPLE*/
     // FIXME: Checking both values should be unnecessary, since they should have
     // a consistent shape.  However, right now we can end up with BoolValue's in
     // integer-typed variables due to our incorrect handling of
@@ -789,6 +791,11 @@ Value *Environment::getValue(const Expr &E) const {
     return nullptr;
   return getValue(*It->second);
 }
+
+#ifndef SAT_BOOL
+Value *Environment::getAtomValue(Atom A) const { return AtomToVal.lookup(A); }
+void Environment::setAtomValue(Atom A, Value &Val) { AtomToVal[A] = &Val; }
+#endif
 
 Value *Environment::createValue(QualType Type) {
   llvm::DenseSet<QualType> Visited;

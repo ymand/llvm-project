@@ -452,6 +452,11 @@ public:
   /// storage location in the environment, otherwise returns null.
   Value *getValue(const Expr &E) const;
 
+#ifndef SAT_BOOL
+  Value *getAtomValue(Atom A) const;
+  void setAtomValue(Atom A, Value &Val);
+#endif
+
   // FIXME: should we deprecate the following & call arena().create() directly?
 
   /// Creates a `T` (some subclass of `Value`), forwarding `args` to the
@@ -659,6 +664,7 @@ private:
   // deterministic sequence. This in turn produces deterministic SAT formulas.
   llvm::MapVector<const Expr *, Value *> ExprToVal;
   llvm::MapVector<const StorageLocation *, Value *> LocToVal;
+  llvm::MapVector<Atom, Value *> AtomToVal;
 
   Atom FlowConditionToken;
 };

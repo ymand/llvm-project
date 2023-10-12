@@ -29,6 +29,7 @@
 #include "clang/Analysis/FlowSensitive/DataflowLattice.h"
 #include "clang/Analysis/FlowSensitive/DataflowWorklist.h"
 #include "clang/Analysis/FlowSensitive/RecordOps.h"
+#include "clang/Analysis/FlowSensitive/StorageLocation.h"
 #include "clang/Analysis/FlowSensitive/Transfer.h"
 #include "clang/Analysis/FlowSensitive/TypeErasedDataflowAnalysis.h"
 #include "clang/Analysis/FlowSensitive/Value.h"
@@ -70,20 +71,236 @@ static bool isLoopHead(const CFGBlock &B) {
 
 namespace {
 
+#ifdef SAT_BOOL
 // The return type of the visit functions in TerminatorVisitor. The first
 // element represents the terminator expression (that is the conditional
 // expression in case of a path split in the CFG). The second element
 // represents whether the condition was true or false.
 using TerminatorVisitorRetTy = std::pair<const Expr *, bool>;
+#else
+using BindingTy =
+    std::optional<std::pair<const StorageLocation *, bool>>;
+
+class NameVisitor
+    : public ConstStmtVisitor<NameVisitor, BindingTy> {
+public:
+  NameVisitor(Environment &Env) : Env(Env) {}
+
+  BindingTy VisitDeclRefExpr(const DeclRefExpr *S) {
+    const ValueDecl *VD = S->getDecl();
+    assert(VD != nullptr);
+
+    // Some `DeclRefExpr`s aren't glvalues, so we can't associate them with a
+    // `StorageLocation`, and there's also no sensible `Value` that we can
+    // assign to them. Examples:
+    // - Non-static member variables
+    // - Non static member functions
+    //   Note: Member operators are an exception to this, but apparently only
+    //   if the `DeclRefExpr` is used within the callee of a
+    //   `CXXOperatorCallExpr`. In other cases, for example when applying the
+    //   address-of operator, the `DeclRefExpr` is a prvalue.
+    if (!S->isGLValue())
+      return std::nullopt;
+
+    return std::make_pair(Env.getStorageLocation(*VD), true);
+  }
+
+  BindingTy VisitImplicitCastExpr(const ImplicitCastExpr *S) {
+    const Expr *SubExpr = S->getSubExpr();
+    assert(SubExpr != nullptr);
+
+    switch (S->getCastKind()) {
+    case CK_IntegralCast:
+    case CK_LValueToRValue:
+      return Visit(SubExpr);
+
+    case CK_IntegralToBoolean:
+    case CK_UncheckedDerivedToBase:
+    case CK_ConstructorConversion:
+    case CK_UserDefinedConversion:
+    case CK_NoOp:
+    case CK_NullToPointer:
+    case CK_NullToMemberPointer:
+    case CK_FunctionToPointerDecay:
+    case CK_BuiltinFnToFnPtr:
+      return std::nullopt;
+
+    default:
+      return std::nullopt;
+    }
+  }
+
+  BindingTy VisitUnaryOperator(const UnaryOperator *S) {
+    const Expr *SubExpr = S->getSubExpr();
+    assert(SubExpr != nullptr);
+
+    switch (S->getOpcode()) {
+    // case UO_Deref: {
+    //   const auto *SubExprVal =
+    //       cast_or_null<PointerValue>(Env.getValue(*SubExpr));
+    //   if (SubExprVal == nullptr)
+    //     break;
+
+    //   Env.setStorageLocation(*S, SubExprVal->getPointeeLoc());
+    //   break;
+    // }
+    // case UO_AddrOf: {
+    //   // FIXME: Model pointers to members.
+    //   if (S->getType()->isMemberPointerType())
+    //     break;
+
+    //   if (StorageLocation *PointeeLoc = Env.getStorageLocation(*SubExpr))
+    //     Env.setValue(*S, Env.create<PointerValue>(*PointeeLoc));
+    //   break;
+    // }
+    case UO_LNot:
+      if (auto SubExprBinding = Visit(SubExpr)) {
+        SubExprBinding->second = !SubExprBinding->second;
+        return SubExprBinding;
+      }
+      break;
+    default:
+      break;
+    }
+    return std::nullopt;
+  }
+
+  BindingTy VisitBinaryOperator(const BinaryOperator *S) {
+    llvm::errs() << "Name: BinOp: ";
+    const Expr *LHS = S->getLHS();
+    assert(LHS != nullptr);
+
+    const Expr *RHS = S->getRHS();
+    assert(RHS != nullptr);
+
+    switch (S->getOpcode()) {
+    case BO_NE:
+    case BO_EQ: {
+      bool Negate = S->getOpcode() == BO_NE;
+      if (Negate)
+        llvm::errs() << "NE";
+      else
+        llvm::errs() << "EQ";
+
+      if (auto LHSBinding = Visit(LHS)) {
+        llvm::errs() << ": trying to bind LHS. RHS";
+        // FIXME: handle case of obviously unreachable branch?
+        auto *RHSVal = Env.getValue(*RHS);
+        if (RHSVal == &Env.getBoolLiteralValue(Negate)) {
+          llvm::errs() << " equals literal " << Negate << "\n";
+          LHSBinding->second = !LHSBinding->second;
+          return LHSBinding;
+        }
+        if (RHSVal == &Env.getBoolLiteralValue(!Negate)) {
+          llvm::errs() << " equals literal " << !Negate << "\n";
+          return LHSBinding;
+        }
+        llvm::errs() << "does not equal literal";
+      }
+      if (auto RHSBinding = Visit(RHS)) {
+        llvm::errs() << ": trying to bind RHS. LHS";
+        // FIXME: handle case of obviously unreachable branch?
+        auto *LHSVal = Env.getValue(*LHS);
+        if (LHSVal == &Env.getBoolLiteralValue(Negate)) {
+          llvm::errs() << " equals literal " << Negate << "\n";
+          RHSBinding->second = !RHSBinding->second;
+          return RHSBinding;
+        }
+        if (LHSVal == &Env.getBoolLiteralValue(!Negate)) {
+          llvm::errs() << " equals literal " << !Negate << "\n";
+          return RHSBinding;
+        }
+        llvm::errs() << "does not equal literal.\n";
+      }
+      llvm::errs() << ". No bindings found.\n";
+      break;
+    }
+    default:
+      llvm::errs() << "Other\n";
+      break;
+    }
+    return std::nullopt;
+  }
+
+  // void VisitMemberExpr(const MemberExpr *S) {
+  //   ValueDecl *Member = S->getMemberDecl();
+  //   assert(Member != nullptr);
+
+  //   // FIXME: Consider assigning pointer values to function member expressions.
+  //   if (Member->isFunctionOrFunctionTemplate())
+  //     return;
+
+  //   // FIXME: if/when we add support for modeling enums, use that support here.
+  //   if (isa<EnumConstantDecl>(Member))
+  //     return;
+
+  //   if (auto *D = dyn_cast<VarDecl>(Member)) {
+  //     if (D->hasGlobalStorage()) {
+  //       auto *VarDeclLoc = Env.getStorageLocation(*D);
+  //       if (VarDeclLoc == nullptr)
+  //         return;
+
+  //       Env.setStorageLocation(*S, *VarDeclLoc);
+  //       return;
+  //     }
+  //   }
+
+  //   RecordStorageLocation *BaseLoc = getBaseObjectLocation(*S, Env);
+  //   if (BaseLoc == nullptr)
+  //     return;
+
+  //   auto *MemberLoc = BaseLoc->getChild(*Member);
+  //   if (MemberLoc == nullptr)
+  //     return;
+  //   Env.setStorageLocation(*S, *MemberLoc);
+  // }
+
+  // void VisitConditionalOperator(const ConditionalOperator *S) {
+  //   /*SIMPLE*/ // revisit the comment
+  //   // FIXME: Revisit this once flow conditions are added to the framework. For
+  //   // `a = b ? c : d` we can add `b => a == c && !b => a == d` to the flow
+  //   // condition.
+  //   if (S->isGLValue())
+  //     Env.setStorageLocation(*S, Env.createObject(S->getType()));
+  //   else if (Value *Val = Env.createValue(S->getType()))
+  //     Env.setValue(*S, *Val);
+  // }
+
+  BindingTy VisitParenExpr(const ParenExpr *S) {
+    // The CFG does not contain `ParenExpr` as top-level statements in basic
+    // blocks, however manual traversal to sub-expressions may encounter them.
+    // Redirect to the sub-expression.
+    auto *SubExpr = S->getSubExpr();
+    assert(SubExpr != nullptr);
+    return Visit(SubExpr);
+  }
+
+ private:
+  Environment &Env;
+};
+
+// For a condition expression, its location and the bool to which it is bound.
+// struct CondBinding {
+//   const StorageLocation *Loc;
+//   bool Val;
+// };
+using TerminatorVisitorRetTy =
+    std::optional<std::pair<const Expr *, BindingTy>>;
+#endif
 
 /// Extends the flow condition of an environment based on a terminator
 /// statement.
 class TerminatorVisitor
     : public ConstStmtVisitor<TerminatorVisitor, TerminatorVisitorRetTy> {
 public:
+#ifdef SAT_BOOL
   TerminatorVisitor(const StmtToEnvMap &StmtToEnv, Environment &Env,
                     int BlockSuccIdx)
       : StmtToEnv(StmtToEnv), Env(Env), BlockSuccIdx(BlockSuccIdx) {}
+#else
+  TerminatorVisitor(Environment &Env, int BlockSuccIdx)
+      : Env(Env), BlockSuccIdx(BlockSuccIdx) {}
+#endif
 
   TerminatorVisitorRetTy VisitIfStmt(const IfStmt *S) {
     auto *Cond = S->getCond();
@@ -107,13 +324,21 @@ public:
     auto *Cond = S->getCond();
     if (Cond != nullptr)
       return extendFlowCondition(*Cond);
+#ifdef SAT_BOOL
     return {nullptr, false};
+#else
+    return std::nullopt;
+#endif
   }
 
   TerminatorVisitorRetTy VisitCXXForRangeStmt(const CXXForRangeStmt *) {
     // Don't do anything special for CXXForRangeStmt, because the condition
     // (being implicitly generated) isn't visible from the loop body.
+#ifdef SAT_BOOL
     return {nullptr, false};
+#else
+    return std::nullopt;
+#endif
   }
 
   TerminatorVisitorRetTy VisitBinaryOperator(const BinaryOperator *S) {
@@ -131,6 +356,8 @@ public:
   }
 
 private:
+  // Instead, update the map.
+#ifdef SAT_BOOL
   TerminatorVisitorRetTy extendFlowCondition(const Expr &Cond) {
     // The terminator sub-expression might not be evaluated.
     if (Env.getValue(Cond) == nullptr)
@@ -153,12 +380,21 @@ private:
       Val = &Env.makeNot(*Val);
       ConditionValue = false;
     }
-
     Env.addToFlowCondition(Val->formula());
     return {&Cond, ConditionValue};
   }
+#else
+  TerminatorVisitorRetTy extendFlowCondition(const Expr &Cond) {
+    auto Binding = NameVisitor(Env).Visit(&Cond);
+    if (Binding && BlockSuccIdx == 1)
+      Binding->second = !Binding->second;
+    return std::make_pair(&Cond, Binding);
+  }
+#endif
 
+#ifdef SAT_BOOL
   const StmtToEnvMap &StmtToEnv;
+#endif
   Environment &Env;
   int BlockSuccIdx;
 };
@@ -337,6 +573,7 @@ computeBlockInputState(const CFGBlock &Block, AnalysisContext &AC) {
         TypeErasedDataflowAnalysisState Copy = MaybePredState->fork();
 
         const StmtToEnvMap StmtToEnv(AC.CFCtx, AC.BlockStates);
+#ifdef SAT_BOOL
         auto [Cond, CondValue] =
             TerminatorVisitor(StmtToEnv, Copy.Env,
                               blockIndexInPredecessor(*Pred, Block))
@@ -346,6 +583,21 @@ computeBlockInputState(const CFGBlock &Block, AnalysisContext &AC) {
           // are not set.
           AC.Analysis.transferBranchTypeErased(CondValue, Cond, Copy.Lattice,
                                                Copy.Env);
+#else
+        int index = blockIndexInPredecessor(*Pred, Block);
+        if (auto Mapping =
+                TerminatorVisitor(Copy.Env, index).Visit(PredTerminatorStmt)) {
+          auto [Cond, Binding] = *Mapping;
+          if (Binding) {
+            auto [Loc, Val] = *Binding;
+            Copy.Env.setValue(*Loc, Copy.Env.getBoolLiteralValue(Val));
+          }
+          // FIXME: Call transferBranchTypeErased even if BuiltinTransferOpts
+          // are not set.
+          AC.Analysis.transferBranchTypeErased((index == 0), Cond, Copy.Lattice,
+                                               Copy.Env);
+        }
+#endif
         Builder.addOwned(std::move(Copy));
         continue;
       }
